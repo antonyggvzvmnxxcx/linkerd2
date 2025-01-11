@@ -5,9 +5,11 @@ import (
 
 	"github.com/linkerd/linkerd2/multicluster/static"
 	"github.com/linkerd/linkerd2/pkg/charts"
+	"github.com/linkerd/linkerd2/pkg/charts/linkerd2"
 	"github.com/linkerd/linkerd2/pkg/k8s"
 	"helm.sh/helm/v3/pkg/chart/loader"
 	"helm.sh/helm/v3/pkg/chartutil"
+	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/yaml"
 )
 
@@ -28,12 +30,21 @@ type Values struct {
 	ProxyOutboundPort              uint32   `json:"proxyOutboundPort"`
 	ServiceMirror                  bool     `json:"serviceMirror"`
 	LogLevel                       string   `json:"logLevel"`
+	LogFormat                      string   `json:"logFormat"`
 	ServiceMirrorRetryLimit        uint32   `json:"serviceMirrorRetryLimit"`
 	ServiceMirrorUID               int64    `json:"serviceMirrorUID"`
+	ServiceMirrorGID               int64    `json:"serviceMirrorGID"`
+	Replicas                       uint32   `json:"replicas"`
 	RemoteMirrorServiceAccount     bool     `json:"remoteMirrorServiceAccount"`
 	RemoteMirrorServiceAccountName string   `json:"remoteMirrorServiceAccountName"`
 	TargetClusterName              string   `json:"targetClusterName"`
 	EnablePodAntiAffinity          bool     `json:"enablePodAntiAffinity"`
+	RevisionHistoryLimit           uint32   `json:"revisionHistoryLimit"`
+
+	ServiceMirrorAdditionalEnv   []corev1.EnvVar `json:"serviceMirrorAdditionalEnv"`
+	ServiceMirrorExperimentalEnv []corev1.EnvVar `json:"serviceMirrorExperimentalEnv"`
+
+	LocalServiceMirror *LocalServiceMirror `json:"localServiceMirror"`
 }
 
 // Gateway contains all options related to the Gateway Service
@@ -47,14 +58,31 @@ type Gateway struct {
 	Probe              *Probe            `json:"probe"`
 	ServiceAnnotations map[string]string `json:"serviceAnnotations"`
 	LoadBalancerIP     string            `json:"loadBalancerIP"`
+	PauseImage         string            `json:"pauseImage"`
+	UID                int64             `json:"UID"`
+	GID                int64             `json:"GID"`
 }
 
 // Probe contains all options for the Probe Service
 type Probe struct {
-	Path     string `json:"path"`
-	Port     uint32 `json:"port"`
-	NodePort uint32 `json:"nodePort"`
-	Seconds  uint32 `json:"seconds"`
+	FailureThreshold uint32 `json:"failureThreshold"`
+	Path             string `json:"path"`
+	Port             uint32 `json:"port"`
+	NodePort         uint32 `json:"nodePort"`
+	Seconds          uint32 `json:"seconds"`
+	Timeout          string `json:"timeout"`
+}
+
+type LocalServiceMirror struct {
+	ServiceMirrorRetryLimit  uint32          `json:"serviceMirrorRetryLimit"`
+	FederatedServiceSelector string          `json:"federatedServiceSelector"`
+	Replias                  uint32          `json:"replicas"`
+	Image                    *linkerd2.Image `json:"image"`
+	LogLevel                 string          `json:"logLevel"`
+	LogFormat                string          `json:"logFormat"`
+	EnablePprof              bool            `json:"enablePprof"`
+	UID                      int64           `json:"UID"`
+	GID                      int64           `json:"GID"`
 }
 
 // NewInstallValues returns a new instance of the Values type.

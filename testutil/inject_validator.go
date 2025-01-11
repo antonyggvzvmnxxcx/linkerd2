@@ -38,6 +38,7 @@ type InjectValidator struct {
 	LogLevel                string
 	LogFormat               string
 	UID                     int
+	GID                     int
 	Version                 string
 	RequireIdentityOnPorts  string
 	SkipOutboundPorts       string
@@ -47,6 +48,7 @@ type InjectValidator struct {
 	InboundConnectTimeout   string
 	WaitBeforeExitSeconds   int
 	SkipSubnets             string
+	ShutdownGracePeriod     string
 }
 
 func (iv *InjectValidator) getContainer(pod *v1.PodSpec, name string, isInit bool) *v1.Container {
@@ -154,7 +156,11 @@ func (iv *InjectValidator) validateProxyContainer(pod *v1.PodSpec) error {
 	}
 
 	if iv.OutboundPort != 0 {
-		if err := iv.validateEnvVar(proxyContainer, "LINKERD2_PROXY_OUTBOUND_LISTEN_ADDR", fmt.Sprintf("127.0.0.1:%d", iv.OutboundPort)); err != nil {
+		if err := iv.validateEnvVar(
+			proxyContainer,
+			"LINKERD2_PROXY_OUTBOUND_LISTEN_ADDRS",
+			fmt.Sprintf("127.0.0.1:%d", iv.OutboundPort),
+		); err != nil {
 			return err
 		}
 	}
@@ -247,7 +253,8 @@ func (iv *InjectValidator) validateProxyContainer(pod *v1.PodSpec) error {
 	}
 
 	if iv.LogLevel != "" {
-		if err := iv.validateEnvVar(proxyContainer, "LINKERD2_PROXY_LOG", iv.LogLevel); err != nil {
+		expectedLogLevel := fmt.Sprintf("%s,[{headers}]=off,[{request}]=off", iv.LogLevel)
+		if err := iv.validateEnvVar(proxyContainer, "LINKERD2_PROXY_LOG", expectedLogLevel); err != nil {
 			return err
 		}
 	}
@@ -264,6 +271,15 @@ func (iv *InjectValidator) validateProxyContainer(pod *v1.PodSpec) error {
 		}
 		if *proxyContainer.SecurityContext.RunAsUser != int64(iv.UID) {
 			return fmt.Errorf("runAsUser: expected %d, actual %d", iv.UID, *proxyContainer.SecurityContext.RunAsUser)
+		}
+	}
+
+	if iv.GID != 0 {
+		if proxyContainer.SecurityContext.RunAsGroup == nil {
+			return fmt.Errorf("no RunAsGroup specified")
+		}
+		if *proxyContainer.SecurityContext.RunAsGroup != int64(iv.GID) {
+			return fmt.Errorf("runAsGroup: expected %d, actual %d", iv.GID, *proxyContainer.SecurityContext.RunAsGroup)
 		}
 	}
 
@@ -296,6 +312,12 @@ func (iv *InjectValidator) validateProxyContainer(pod *v1.PodSpec) error {
 		actual := strings.Join(proxyContainer.Lifecycle.PreStop.Exec.Command, ",")
 		if expectedCmd != strings.Join(proxyContainer.Lifecycle.PreStop.Exec.Command, ",") {
 			return fmt.Errorf("preStopHook: expected %s, actual %s", expectedCmd, actual)
+		}
+	}
+
+	if iv.ShutdownGracePeriod != "" {
+		if err := iv.validateEnvVar(proxyContainer, "LINKERD2_PROXY_SHUTDOWN_GRACE_PERIOD", iv.ShutdownGracePeriod); err != nil {
+			return err
 		}
 	}
 
@@ -514,6 +536,11 @@ func (iv *InjectValidator) GetFlagsAndAnnotations() ([]string, map[string]string
 		flags = append(flags, fmt.Sprintf("--proxy-uid=%s", strconv.Itoa(iv.UID)))
 	}
 
+	if iv.GID != 0 {
+		annotations[k8s.ProxyGIDAnnotation] = strconv.Itoa(iv.GID)
+		flags = append(flags, fmt.Sprintf("--proxy-gid=%s", strconv.Itoa(iv.GID)))
+	}
+
 	if iv.Version != "" {
 		annotations[k8s.ProxyVersionOverrideAnnotation] = iv.Version
 		flags = append(flags, fmt.Sprintf("--proxy-version=%s", iv.Version))
@@ -555,6 +582,11 @@ func (iv *InjectValidator) GetFlagsAndAnnotations() ([]string, map[string]string
 	if iv.SkipSubnets != "" {
 		annotations[k8s.ProxySkipSubnetsAnnotation] = iv.SkipSubnets
 		flags = append(flags, fmt.Sprintf("--skip-subnets=%s", iv.SkipSubnets))
+	}
+
+	if iv.ShutdownGracePeriod != "" {
+		annotations[k8s.ProxyShutdownGracePeriodAnnotation] = iv.ShutdownGracePeriod
+		flags = append(flags, fmt.Sprintf("--shutdown-grace-period=%s", iv.ShutdownGracePeriod))
 	}
 
 	return flags, annotations

@@ -4,8 +4,9 @@
 
 [![CII Best Practices](https://bestpractices.coreinfrastructure.org/projects/4629/badge)](https://bestpractices.coreinfrastructure.org/projects/4629)
 [![GitHub Actions Status][github-actions-badge]][github-actions]
-[![GitHub license][license-badge]](LICENSE)
+[![GitHub license](https://img.shields.io/github/license/linkerd/linkerd2.svg)](LICENSE)
 [![Go Report Card][go-report-card-badge]][go-report-card]
+[![Go Reference][go-doc-badge]][go-doc]
 [![Slack Status][slack-badge]][slack]
 
 :balloon: Welcome to Linkerd! :wave:
@@ -51,20 +52,6 @@ contributing changes.
   list][linkerd-dev], and [announcements mailing list][linkerd-announce].
 * Follow [@Linkerd][twitter] on Twitter.
 * Join the [Linkerd Slack][slack].
-* Join us in the regular online community meetings!
-
-## Community meetings
-
-We host regular online meetings for contributors, adopters, maintainers, and
-anyone else interested to connect in a synchronous fashion. These meetings
-usually take place the last Thursday of the month at 9am Pacific / 4pm UTC.
-
-* [Zoom link](https://zoom.us/my/cncflinkerd)
-* [Google calendar](https://calendar.google.com/calendar/embed?src=buoyant.io_j28ik70vrl3418f4oldkdici7o%40group.calendar.google.com)
-* [Minutes from previous meetings](https://docs.google.com/document/d/1OvXYL5Q53klQFZPokQJas72YqkWXplkPQUguFbRW7Wo/edit)
-* [Recordings from previous meetings](https://www.youtube.com/playlist?list=PLI9FkLPXDscBHP91Ud3lyJScI4ZCjRG6F)
-
-We're a friendly group, so please feel free to join us!
 
 ## Steering Committee meetings
 
@@ -87,12 +74,12 @@ minutes to review our [Code of Conduct][CoC].
 See [SECURITY.md](SECURITY.md) for our security policy, including how to report
 vulnerabilities.
 
-A third party security audit was performed by Cure53 in June 2019. You can see
-the full report [here](SECURITY_AUDIT.pdf).
+Linkerd undergoes periodic third-party security audits and we
+[publish the results here](https://github.com/linkerd/linkerd2/tree/main/audits).
 
 ## License
 
-Copyright 2021 the Linkerd Authors. All rights reserved.
+Copyright 2023 the Linkerd Authors. All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License"); you may not use
 these files except in compliance with the License. You may obtain a copy of the
@@ -107,27 +94,24 @@ specific language governing permissions and limitations under the License.
 
 <!-- refs -->
 [github-actions]: https://github.com/linkerd/linkerd2/actions
-[github-actions-badge]: https://github.com/linkerd/linkerd2/workflows/Cloud%20integration/badge.svg
+[github-actions-badge]: https://github.com/linkerd/linkerd2/actions/workflows/actions.yml/badge.svg
 [cncf]: https://www.cncf.io/
 [CoC]: https://github.com/linkerd/linkerd/wiki/Linkerd-code-of-conduct
 [getting-started]: https://linkerd.io/2/getting-started/
-[golang]: https://golang.org/
 [go-report-card]: https://goreportcard.com/report/github.com/linkerd/linkerd2
 [go-report-card-badge]: https://goreportcard.com/badge/github.com/linkerd/linkerd2
-[license-badge]: https://img.shields.io/github/license/linkerd/linkerd.svg
+[go-doc-badge]: https://pkg.go.dev/badge/github.com/linkerd/linkerd2.svg
+[go-doc]: https://pkg.go.dev/github.com/linkerd/linkerd2
 [linkerd1]: https://github.com/linkerd/linkerd
 [linkerd2]: https://github.com/linkerd/linkerd2
 [linkerd-announce]: https://lists.cncf.io/g/cncf-linkerd-announce
-[linkerd-demo]: https://linkerd.io/2/getting-started/#step-3-install-the-demo-app
 [linkerd-dev]: https://lists.cncf.io/g/cncf-linkerd-dev
 [linkerd-docs]: https://linkerd.io/2/overview/
-[linkerd-inject]: https://linkerd.io/2/adding-your-service/
 [linkerd-users]: https://lists.cncf.io/g/cncf-linkerd-users
 [linkerd-website]: https://github.com/linkerd/website
 [logo]: https://user-images.githubusercontent.com/9226/33582867-3e646e02-d90c-11e7-85a2-2e238737e859.png
 [proxy]: https://github.com/linkerd/linkerd2-proxy
 [proxy-api]: https://github.com/linkerd/linkerd2-proxy-api
-[rust]: https://www.rust-lang.org/
 [slack-badge]: http://slack.linkerd.io/badge.svg
 [slack]: http://slack.linkerd.io
 [twitter]: https://twitter.com/linkerd

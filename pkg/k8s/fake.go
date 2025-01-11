@@ -3,6 +3,7 @@ package k8s
 import (
 	"bufio"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 
@@ -11,28 +12,41 @@ import (
 
 	spscheme "github.com/linkerd/linkerd2/controller/gen/client/clientset/versioned/scheme"
 	corev1 "k8s.io/api/core/v1"
-	discovery "k8s.io/api/discovery/v1beta1"
+	discovery "k8s.io/api/discovery/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apiextensionsv1beta1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1beta1"
 	apiextensionsclient "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	apiextensionsfake "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/fake"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/rand"
 	yamlDecoder "k8s.io/apimachinery/pkg/util/yaml"
 	discoveryfake "k8s.io/client-go/discovery/fake"
+	"k8s.io/client-go/dynamic"
+	dynamicFake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/testing"
 	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
 	apiregistrationclient "k8s.io/kube-aggregator/pkg/client/clientset_generated/clientset"
 	apiregistrationfake "k8s.io/kube-aggregator/pkg/client/clientset_generated/clientset/fake"
+
 	"sigs.k8s.io/yaml"
 )
 
+func init() {
+	apiextensionsv1beta1.AddToScheme(scheme.Scheme)
+	apiextensionsv1.AddToScheme(scheme.Scheme)
+	apiregistrationv1.AddToScheme(scheme.Scheme)
+	spscheme.AddToScheme(scheme.Scheme)
+}
+
 // NewFakeAPI provides a mock KubernetesAPI backed by hard-coded resources
 func NewFakeAPI(configs ...string) (*KubernetesAPI, error) {
-	client, apiextClient, apiregClient, _, err := NewFakeClientSets(configs...)
+	client, apiextClient, apiregClient, _, _, err := NewFakeClientSets(configs...)
 	if err != nil {
 		return nil, err
 	}
@@ -48,7 +62,7 @@ func NewFakeAPI(configs ...string) (*KubernetesAPI, error) {
 // NewFakeAPIFromManifests reads from a slice of readers, each representing a
 // manifest or collection of manifests, and returns a mock KubernetesAPI.
 func NewFakeAPIFromManifests(readers []io.Reader) (*KubernetesAPI, error) {
-	client, apiextClient, apiregClient, _, err := newFakeClientSetsFromManifests(readers)
+	client, apiextClient, apiregClient, _, _, err := newFakeClientSetsFromManifests(readers)
 	if err != nil {
 		return nil, err
 	}
@@ -63,10 +77,11 @@ func NewFakeAPIFromManifests(readers []io.Reader) (*KubernetesAPI, error) {
 // NewFakeClientSets provides mock Kubernetes ClientSets.
 // TODO: make this private once KubernetesAPI (and NewFakeAPI) supports spClient
 func NewFakeClientSets(configs ...string) (
-	kubernetes.Interface,
+	*fake.Clientset,
 	apiextensionsclient.Interface,
 	apiregistrationclient.Interface,
 	spclient.Interface,
+	dynamic.Interface,
 	error,
 ) {
 	objs := []runtime.Object{}
@@ -77,7 +92,7 @@ func NewFakeClientSets(configs ...string) (
 	for _, config := range configs {
 		obj, err := ToRuntimeObject(config)
 		if err != nil {
-			return nil, nil, nil, nil, err
+			return nil, nil, nil, nil, nil, err
 		}
 		switch strings.ToLower(obj.GetObjectKind().GroupVersionKind().Kind) {
 		case "customresourcedefinition":
@@ -90,18 +105,20 @@ func NewFakeClientSets(configs ...string) (
 			spObjs = append(spObjs, obj)
 		case Server:
 			spObjs = append(spObjs, obj)
+		case ExtWorkload:
+			spObjs = append(spObjs, obj)
 		default:
 			objs = append(objs, obj)
 		}
 	}
 
-	endpointslice, err := ToRuntimeObject(`apiVersion: discovery.k8s.io/v1beta1
+	endpointslice, err := ToRuntimeObject(`apiVersion: discovery.k8s.io/v1
 kind: EndpointSlice
 metadata:
   name: kubernetes
   namespace: default`)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 	objs = append(objs, endpointslice)
 
@@ -126,22 +143,48 @@ metadata:
 		},
 	})
 
+	// Add helpers to work with endpoint slice objects.
+	cs.PrependReactor("create", "endpointslices", testing.ReactionFunc(func(action testing.Action) (bool, runtime.Object, error) {
+		es := action.(testing.CreateAction).GetObject().(*discovery.EndpointSlice)
+
+		// The API Server cannot generate a name when we use mocks, intercept
+		// the object and change its name
+		if es.GenerateName != "" {
+			es.Name = fmt.Sprintf("%s-%s", es.GenerateName, rand.String(8))
+			es.GenerateName = ""
+		}
+		es.Generation = 1
+
+		return false, es, nil
+	}))
+
+	cs.PrependReactor("update", "endpointslices", testing.ReactionFunc(func(action testing.Action) (bool, runtime.Object, error) {
+		// An update won't increase the generation since the API Server is
+		// mocked, so do a typecast and increment it here.
+		es := action.(testing.CreateAction).GetObject().(*discovery.EndpointSlice)
+		es.Generation++
+		return false, es, nil
+	}))
+
 	return cs,
 		apiextensionsfake.NewSimpleClientset(apiextObjs...),
 		apiregistrationfake.NewSimpleClientset(apiRegObjs...),
 		spfake.NewSimpleClientset(spObjs...),
+		dynamicFake.NewSimpleDynamicClient(scheme.Scheme, objs...),
 		nil
 }
 
 // newFakeClientSetsFromManifests reads from a slice of readers, each
 // representing a manifest or collection of manifests, and returns a mock
 // Kubernetes ClientSet.
+//
 //nolint:unparam
 func newFakeClientSetsFromManifests(readers []io.Reader) (
 	kubernetes.Interface,
 	apiextensionsclient.Interface,
 	apiregistrationclient.Interface,
 	spclient.Interface,
+	dynamic.Interface,
 	error,
 ) {
 	configs := []string{}
@@ -157,13 +200,13 @@ func newFakeClientSetsFromManifests(readers []io.Reader) (
 				if errors.Is(err, io.EOF) {
 					break
 				}
-				return nil, nil, nil, nil, err
+				return nil, nil, nil, nil, nil, err
 			}
 
 			// check for kind
 			var typeMeta metav1.TypeMeta
 			if err := yaml.Unmarshal(bytes, &typeMeta); err != nil {
-				return nil, nil, nil, nil, err
+				return nil, nil, nil, nil, nil, err
 			}
 
 			switch typeMeta.Kind {
@@ -173,7 +216,7 @@ func newFakeClientSetsFromManifests(readers []io.Reader) (
 			case "List":
 				var sourceList corev1.List
 				if err := yaml.Unmarshal(bytes, &sourceList); err != nil {
-					return nil, nil, nil, nil, err
+					return nil, nil, nil, nil, nil, err
 				}
 				for _, item := range sourceList.Items {
 					configs = append(configs, string(item.Raw))
@@ -190,9 +233,6 @@ func newFakeClientSetsFromManifests(readers []io.Reader) (
 
 // ToRuntimeObject deserializes Kubernetes YAML into a Runtime Object
 func ToRuntimeObject(config string) (runtime.Object, error) {
-	apiextensionsv1beta1.AddToScheme(scheme.Scheme)
-	apiregistrationv1.AddToScheme(scheme.Scheme)
-	spscheme.AddToScheme(scheme.Scheme)
 	decode := scheme.Codecs.UniversalDeserializer().Decode
 	obj, _, err := decode([]byte(config), nil, nil)
 	return obj, err
@@ -204,6 +244,7 @@ func ToRuntimeObject(config string) (runtime.Object, error) {
 // unregistered.
 func ObjectKinds(obj runtime.Object) ([]schema.GroupVersionKind, bool, error) {
 	apiextensionsv1beta1.AddToScheme(scheme.Scheme)
+	apiextensionsv1.AddToScheme(scheme.Scheme)
 	apiregistrationv1.AddToScheme(scheme.Scheme)
 	spscheme.AddToScheme(scheme.Scheme)
 	return scheme.Scheme.ObjectKinds(obj)

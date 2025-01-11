@@ -68,7 +68,7 @@ func TestTracing(t *testing.T) {
 	checkCmd := []string{"jaeger", "check", "--wait=0"}
 	golden := "check.jaeger.golden"
 	timeout := time.Minute
-	err = TestHelper.RetryFor(timeout, func() error {
+	err = testutil.RetryFor(timeout, func() error {
 		out, err := TestHelper.LinkerdRun(checkCmd...)
 		if err != nil {
 			return fmt.Errorf("'linkerd jaeger check' command failed\n%w\n%s", err, out)
@@ -80,7 +80,11 @@ func TestTracing(t *testing.T) {
 		}
 
 		tpl := template.Must(template.ParseFiles("testdata" + "/" + golden))
-		versionErr := healthcheck.CheckProxyVersionsUpToDate(pods, version.Channels{})
+		chs, err := version.NewChannels("test-99.88.77")
+		if err != nil {
+			panic(err.Error())
+		}
+		versionErr := healthcheck.CheckProxyVersionsUpToDate(pods, chs)
 		versionErrMsg := ""
 		if versionErr != nil {
 			versionErrMsg = versionErr.Error()
@@ -159,7 +163,7 @@ func TestTracing(t *testing.T) {
 
 		t.Run("expect full trace", func(t *testing.T) {
 			timeout := 3 * time.Minute
-			err = TestHelper.RetryFor(timeout, func() error {
+			err = testutil.RetryFor(timeout, func() error {
 				url, err := TestHelper.URLFor(ctx, tracingNs, "jaeger", 16686)
 				if err != nil {
 					return err

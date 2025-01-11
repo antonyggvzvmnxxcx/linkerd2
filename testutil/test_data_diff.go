@@ -5,10 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"testing"
+	"text/template"
 
 	"github.com/go-test/deep"
 	"github.com/sergi/go-diff/diffmatchpatch"
@@ -24,21 +24,39 @@ type TestDataDiffer struct {
 
 // DiffTestYAML compares a YAML structure to a fixture on the filestystem.
 func (td *TestDataDiffer) DiffTestYAML(path string, actualYAML string) error {
+	expectedYAML := ReadTestdata(path)
+	return td.diffTestYAML(path, actualYAML, expectedYAML)
+}
+
+// DiffTestYAMLTemplate compares a YAML structure to a parameterized fixture on the filestystem.
+func (td *TestDataDiffer) DiffTestYAMLTemplate(path string, actualYAML string, params any) error {
+	file := filepath.Join("testdata", path)
+	t, err := template.New(path).ParseFiles(file)
+	if err != nil {
+		return fmt.Errorf("Failed to read YAML template from %s: %w", path, err)
+	}
+	var buf bytes.Buffer
+	err = t.Execute(&buf, params)
+	if err != nil {
+		return fmt.Errorf("Failed to build YAML from template %s: %w", path, err)
+	}
+	return td.diffTestYAML(path, actualYAML, buf.String())
+}
+
+func (td *TestDataDiffer) diffTestYAML(path, actualYAML, expectedYAML string) error {
 	actual, err := unmarshalYAML([]byte(actualYAML))
 	if err != nil {
 		return fmt.Errorf("Failed to unmarshal generated YAML: %w", err)
 	}
-	expected, err := unmarshalYAML([]byte(ReadTestdata(path)))
+	expected, err := unmarshalYAML([]byte(expectedYAML))
 	if err != nil {
-		return fmt.Errorf("Failed to unmarshal generated YAML from %s: %w", path, err)
+		return fmt.Errorf("Failed to unmarshal expected YAML: %w", err)
 	}
 	diff := deep.Equal(expected, actual)
 	if diff == nil {
 		return nil
 	}
-
 	td.storeActual(path, []byte(actualYAML))
-
 	e := fmt.Sprintf("YAML mismatches %s:", path)
 	for _, d := range diff {
 		e += fmt.Sprintf("\n	%s", d)
@@ -48,6 +66,7 @@ func (td *TestDataDiffer) DiffTestYAML(path string, actualYAML string) error {
 
 // DiffTestdata generates the diff for actual w.r.the file in path
 func (td *TestDataDiffer) DiffTestdata(t *testing.T, path, actual string) {
+	t.Helper()
 	expected := ReadTestdata(path)
 	if actual == expected {
 		return
@@ -83,7 +102,7 @@ func ReadTestdata(fileName string) string {
 		panic(fmt.Sprintf("Failed to open expected output file: %v", err))
 	}
 
-	fixture, err := ioutil.ReadAll(file)
+	fixture, err := io.ReadAll(file)
 	if err != nil {
 		panic(fmt.Sprintf("Failed to read expected output file: %v", err))
 	}
@@ -110,14 +129,14 @@ func unmarshalYAML(data []byte) ([]interface{}, error) {
 
 func writeTestdata(fileName string, data []byte) {
 	p := filepath.Join("testdata", fileName)
-	if err := ioutil.WriteFile(p, data, 0600); err != nil {
+	if err := os.WriteFile(p, data, 0600); err != nil {
 		panic(err)
 	}
 }
 
 func writeRejects(origFileName string, data []byte, rejectPath string) {
 	p := filepath.Join(rejectPath, origFileName+".rej")
-	if err := ioutil.WriteFile(p, data, 0600); err != nil {
+	if err := os.WriteFile(p, data, 0600); err != nil {
 		panic(err)
 	}
 }

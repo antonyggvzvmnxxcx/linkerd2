@@ -3,8 +3,10 @@ package api
 import (
 	"context"
 	"flag"
+	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/linkerd/linkerd2/controller/k8s"
@@ -28,8 +30,22 @@ func Main(args []string) {
 	trustDomain := cmd.String("identity-trust-domain", defaultDomain, "configures the name suffix used for identities")
 	enablePprof := cmd.Bool("enable-pprof", false, "Enable pprof endpoints on the admin server")
 
+	var ignoreHeaders = &stringMap{}
+	cmd.Var(ignoreHeaders, "ignore-headers", "list of headers to ignore")
+
 	traceCollector := flags.AddTraceFlags(cmd)
 	flags.ConfigureAndParse(cmd, args)
+
+	ready := false
+	adminServer := admin.NewServer(*metricsAddr, *enablePprof, &ready)
+
+	go func() {
+		log.Infof("starting admin server on %s", *metricsAddr)
+		if err := adminServer.ListenAndServe(); err != nil {
+			log.Errorf("failed to start tap admin server: %s", err)
+		}
+	}()
+
 	ctx := context.Background()
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
@@ -37,6 +53,7 @@ func Main(args []string) {
 		ctx,
 		*kubeConfigPath,
 		true,
+		"local",
 		k8s.CJ,
 		k8s.DS,
 		k8s.SS,
@@ -58,7 +75,7 @@ func Main(args []string) {
 			log.Warnf("failed to initialize tracing: %s", err)
 		}
 	}
-	grpcTapServer, err := NewGrpcTapServer(*tapPort, *apiNamespace, *trustDomain, k8sAPI)
+	grpcTapServer, err := NewGrpcTapServer(*tapPort, *apiNamespace, *trustDomain, k8sAPI, *ignoreHeaders)
 	if err != nil {
 		log.Fatal(err.Error())
 	}
@@ -69,17 +86,24 @@ func Main(args []string) {
 	k8sAPI.Sync(nil)
 	go apiServer.Start(ctx)
 
-	adminServer := admin.NewServer(*metricsAddr, *enablePprof)
-
-	go func() {
-		log.Infof("starting admin server on %s", *metricsAddr)
-		if err := adminServer.ListenAndServe(); err != nil {
-			log.Errorf("failed to start tap admin server: %s", err)
-		}
-	}()
+	ready = true
 
 	<-stop
 	log.Infof("shutting down APIServer on %s", *apiServerAddr)
 	apiServer.Shutdown(ctx)
 	adminServer.Shutdown(ctx)
+}
+
+type stringMap map[string]bool
+
+func (m stringMap) String() string {
+	return fmt.Sprintf("%v", map[string]bool(m))
+}
+
+func (m stringMap) Set(value string) error {
+	parts := strings.Split(value, ",")
+	for _, p := range parts {
+		m[p] = true
+	}
+	return nil
 }

@@ -11,6 +11,7 @@ import (
 	api "github.com/linkerd/linkerd2/controller/k8s"
 	"github.com/linkerd/linkerd2/pkg/k8s"
 	pb "github.com/linkerd/linkerd2/viz/metrics-api/gen/viz"
+	"github.com/linkerd/linkerd2/viz/pkg/prometheus"
 	"github.com/prometheus/common/model"
 	log "github.com/sirupsen/logrus"
 	"k8s.io/apimachinery/pkg/labels"
@@ -61,6 +62,11 @@ func (s *grpcServer) TopRoutes(ctx context.Context, req *pb.TopRoutesRequest) (*
 		// Authority cannot be the target because authorities don't have namespaces,
 		// therefore there is no namespace in which to look for a service profile.
 		return topRoutesError(req, "Authority cannot be the target of a routes query; try using an authority in the --to flag instead"), nil
+	}
+
+	err = s.validateTimeWindow(ctx, req.TimeWindow)
+	if err != nil {
+		return topRoutesError(req, fmt.Sprintf("invalid time window: %s", err)), nil
 	}
 
 	// Non-authority resource
@@ -290,13 +296,13 @@ func (s *grpcServer) buildRouteLabels(req *pb.TopRoutesRequest, dsts []string, r
 	switch req.Outbound.(type) {
 
 	case *pb.TopRoutesRequest_ToResource:
-		labels = labels.Merge(promQueryLabels(resource))
+		labels = labels.Merge(prometheus.QueryLabels(resource))
 		labels = labels.Merge(promDirectionLabels("outbound"))
 		return renderLabels(labels, dsts)
 
 	default:
 		labels = labels.Merge(promDirectionLabels("inbound"))
-		labels = labels.Merge(promQueryLabels(resource))
+		labels = labels.Merge(prometheus.QueryLabels(resource))
 		return renderLabels(labels, dsts)
 	}
 }

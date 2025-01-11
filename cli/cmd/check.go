@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/linkerd/linkerd2/cli/flag"
 	charts "github.com/linkerd/linkerd2/pkg/charts/linkerd2"
 	pkgcmd "github.com/linkerd/linkerd2/pkg/cmd"
 	"github.com/linkerd/linkerd2/pkg/healthcheck"
@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	valuespkg "helm.sh/helm/v3/pkg/cli/values"
+	utilsexec "k8s.io/utils/exec"
 )
 
 type checkOptions struct {
@@ -66,7 +67,7 @@ func (options *checkOptions) checkFlagSet() *pflag.FlagSet {
 
 	flags.StringVar(&options.versionOverride, "expected-version", options.versionOverride, "Overrides the version used when checking if Linkerd is running the latest version (mostly for testing)")
 	flags.StringVar(&options.cliVersionOverride, "cli-version-override", "", "Used to override the version of the cli (mostly for testing)")
-	flags.StringVarP(&options.output, "output", "o", options.output, "Output format. One of: basic, json, short")
+	flags.StringVarP(&options.output, "output", "o", options.output, "Output format. One of: table, json, short")
 	flags.DurationVar(&options.wait, "wait", options.wait, "Maximum allowed time for all tests to pass")
 
 	return flags
@@ -142,7 +143,14 @@ func configureAndRunChecks(cmd *cobra.Command, wout io.Writer, werr io.Writer, o
 	}
 
 	crdManifest := bytes.Buffer{}
-	err = renderCRDs(&crdManifest)
+	err = renderCRDs(&crdManifest, valuespkg.Options{
+		// GatewayAPI CRDs are optional so don't check for them.
+		Values: []string{
+			"enableHttpRoutes=false",
+			"enableTcpRoutes=false",
+			"enableTlsRoutes=false",
+		},
+	}, "yaml")
 	if err != nil {
 		return err
 	}
@@ -174,6 +182,7 @@ func configureAndRunChecks(cmd *cobra.Command, wout io.Writer, werr io.Writer, o
 			checks = append(checks, healthcheck.LinkerdOpaquePortsDefinitionChecks)
 		} else {
 			checks = append(checks, healthcheck.LinkerdControlPlaneVersionChecks)
+			checks = append(checks, healthcheck.LinkerdExtensionChecks)
 		}
 		checks = append(checks, healthcheck.LinkerdCNIPluginChecks)
 		checks = append(checks, healthcheck.LinkerdHAChecks)
@@ -197,9 +206,6 @@ func configureAndRunChecks(cmd *cobra.Command, wout io.Writer, werr io.Writer, o
 		ChartValues:           values,
 	})
 
-	if options.output == tableOutput {
-		healthcheck.PrintChecksHeader(wout, healthcheck.CoreHeader)
-	}
 	success, warning := healthcheck.RunChecks(wout, werr, hc, options.output)
 
 	if !options.preInstallOnly && !options.crdsOnly {
@@ -232,19 +238,24 @@ func runExtensionChecks(cmd *cobra.Command, wout io.Writer, werr io.Writer, opts
 	if err != nil {
 		return false, false, err
 	}
+	nsLabels := []string{}
+	for _, ns := range namespaces {
+		ext := ns.Labels[k8s.LinkerdExtensionLabel]
+		nsLabels = append(nsLabels, ext)
+	}
 
-	success := true
+	exec := utilsexec.New()
+
+	extensions, missing := findExtensions(os.Getenv("PATH"), filepath.Glob, exec, nsLabels)
+
 	// no extensions to check
-	if len(namespaces) == 0 {
-		return success, false, nil
+	if len(extensions) == 0 && len(missing) == 0 {
+		return true, false, nil
 	}
 
-	nsLabels := make([]string, len(namespaces))
-	for i, ns := range namespaces {
-		nsLabels[i] = ns.Labels[k8s.LinkerdExtensionLabel]
-	}
-
-	extensionSuccess, extensionWarning := healthcheck.RunExtensionsChecks(wout, werr, nsLabels, getExtensionCheckFlags(cmd.Flags()), opts.output)
+	extensionSuccess, extensionWarning := runExtensionsChecks(
+		wout, werr, extensions, missing, exec, getExtensionCheckFlags(cmd.Flags()), opts.output,
+	)
 	return extensionSuccess, extensionWarning, nil
 }
 
@@ -268,20 +279,25 @@ func getExtensionCheckFlags(lf *pflag.FlagSet) []string {
 }
 
 func renderInstallManifest(ctx context.Context) (*charts.Values, string, error) {
+	// Create the default values.
+	k8sAPI, err := k8s.NewAPI(kubeconfigPath, kubeContext, impersonate, impersonateGroup, 30*time.Second)
+	if err != nil {
+		return nil, "", err
+	}
 	values, err := charts.NewValues()
 	if err != nil {
 		return nil, "", err
 	}
-
-	k8sAPI, err := k8s.NewAPI(kubeconfigPath, kubeContext, impersonate, impersonateGroup, 30*time.Second)
+	err = initializeIssuerCredentials(ctx, k8sAPI, values)
 	if err != nil {
-		return values, "", err
+		return nil, "", err
 	}
 
+	// Use empty valuesOverrides because there are no option values to merge.
 	var b strings.Builder
-	err = installControlPlane(ctx, k8sAPI, &b, values, []flag.Flag{}, valuespkg.Options{})
+	err = renderControlPlane(&b, values, map[string]interface{}{}, "yaml")
 	if err != nil {
-		return values, "", err
+		return nil, "", err
 	}
 	return values, b.String(), nil
 }

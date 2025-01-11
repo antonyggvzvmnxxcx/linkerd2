@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	timeout = 10 * time.Second
+	timeout = 15 * time.Second
 
 	// statExpiration indicates when items in the stat cache expire.
 	statExpiration = 1500 * time.Millisecond
@@ -136,10 +136,11 @@ func NewServer(
 	}
 
 	httpServer := &http.Server{
-		Addr:         addr,
-		ReadTimeout:  timeout,
-		WriteTimeout: timeout,
-		Handler:      wrappedServer,
+		Addr:              addr,
+		ReadTimeout:       timeout,
+		ReadHeaderTimeout: timeout,
+		WriteTimeout:      timeout,
+		Handler:           wrappedServer,
 	}
 
 	// webapp routes
@@ -151,7 +152,6 @@ func NewServer(
 	// paths for a list of resources by namespace
 	server.router.GET("/namespaces/:namespace/daemonsets", handler.handleIndex)
 	server.router.GET("/namespaces/:namespace/statefulsets", handler.handleIndex)
-	server.router.GET("/namespaces/:namespace/trafficsplits", handler.handleIndex)
 	server.router.GET("/namespaces/:namespace/jobs", handler.handleIndex)
 	server.router.GET("/namespaces/:namespace/deployments", handler.handleIndex)
 	server.router.GET("/namespaces/:namespace/services", handler.handleIndex)
@@ -164,7 +164,6 @@ func NewServer(
 	server.router.GET("/overview", handler.handleIndex)
 	server.router.GET("/daemonsets", handler.handleIndex)
 	server.router.GET("/statefulsets", handler.handleIndex)
-	server.router.GET("/trafficsplits", handler.handleIndex)
 	server.router.GET("/jobs", handler.handleIndex)
 	server.router.GET("/deployments", handler.handleIndex)
 	server.router.GET("/services", handler.handleIndex)
@@ -176,7 +175,6 @@ func NewServer(
 	server.router.GET("/namespaces/:namespace/pods/:pod", handler.handleIndex)
 	server.router.GET("/namespaces/:namespace/daemonsets/:daemonset", handler.handleIndex)
 	server.router.GET("/namespaces/:namespace/statefulsets/:statefulset", handler.handleIndex)
-	server.router.GET("/namespaces/:namespace/trafficsplits/:trafficsplit", handler.handleIndex)
 	server.router.GET("/namespaces/:namespace/deployments/:deployment", handler.handleIndex)
 	server.router.GET("/namespaces/:namespace/services/:deployment", handler.handleIndex)
 	server.router.GET("/namespaces/:namespace/jobs/:job", handler.handleIndex)

@@ -161,7 +161,8 @@ func getContainerWithPort(pod corev1.Pod, portName string) (corev1.Container, er
 		return container, fmt.Errorf("pod not running: %s", pod.GetName())
 	}
 
-	for _, c := range pod.Spec.Containers {
+	containers := append(pod.Spec.InitContainers, pod.Spec.Containers...)
+	for _, c := range containers {
 		if c.Name != k8s.ProxyContainerName {
 			continue
 		}
@@ -182,7 +183,7 @@ func getContainerCertificate(k8sAPI *k8s.KubernetesAPI, pod corev1.Pod, containe
 
 	defer portForward.Stop()
 	if err = portForward.Init(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error running port-forward: %s", err)
+		fmt.Fprintf(os.Stderr, "Error running port-forward: %s\n", err)
 		return nil, err
 	}
 

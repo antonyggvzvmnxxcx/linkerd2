@@ -7,8 +7,45 @@ kind: ServiceAccount
 apiVersion: v1
 metadata:
   name: collector
-  {{ include "partials.namespace" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    linkerd.io/extension: jaeger
+    {{- with .Values.commonLabels }}{{ toYaml . | trim | nindent 4 }}{{- end }}
 {{- include "partials.image-pull-secrets" .Values.imagePullSecrets }}
+---
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: collector
+  labels:
+    linkerd.io/extension: jaeger
+    {{- with .Values.commonLabels }}{{ toYaml . | trim | nindent 4 }}{{- end }}
+rules:
+- apiGroups: [""]
+  resources: ["pods", "namespaces"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["daemonsets", "replicasets", "statefulsets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["batch"]
+  resources: ["cronjobs", "jobs"]
+  verbs: ["get", "list", "watch"]
+---
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: collector
+  labels:
+    linkerd.io/extension: jaeger
+    {{- with .Values.commonLabels }}{{ toYaml . | trim | nindent 4 }}{{- end }}
+subjects:
+- kind: ServiceAccount
+  name: collector
+  namespace: {{.Release.Namespace}}
+roleRef:
+  kind: ClusterRole
+  name: collector
+  apiGroup: rbac.authorization.k8s.io
 {{ end -}}
 ---
 ###
@@ -20,6 +57,7 @@ metadata:
   name: linkerd-jaeger-injector
   labels:
     linkerd.io/extension: jaeger
+    {{- with .Values.commonLabels }}{{ toYaml . | trim | nindent 4 }}{{- end }}
 rules:
 - apiGroups: [""]
   resources: ["namespaces"]
@@ -31,6 +69,7 @@ metadata:
   name: linkerd-jaeger-injector
   labels:
     linkerd.io/extension: jaeger
+    {{- with .Values.commonLabels }}{{ toYaml . | trim | nindent 4 }}{{- end }}
 subjects:
 - kind: ServiceAccount
   name: jaeger-injector
@@ -45,7 +84,10 @@ kind: ServiceAccount
 apiVersion: v1
 metadata:
   name: jaeger-injector
-  {{ include "partials.namespace" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    linkerd.io/extension: jaeger
+    {{- with .Values.commonLabels }}{{ toYaml . | trim | nindent 4 }}{{- end }}
 {{- include "partials.image-pull-secrets" .Values.imagePullSecrets }}
 ---
 {{- $host := printf "jaeger-injector.%s.svc" .Release.Namespace }}
@@ -55,7 +97,10 @@ kind: Secret
 apiVersion: v1
 metadata:
   name: jaeger-injector-k8s-tls
-  {{ include "partials.namespace" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    linkerd.io/extension: jaeger
+    {{- with .Values.commonLabels }}{{ toYaml . | trim | nindent 4 }}{{- end }}
 type: kubernetes.io/tls
 data:
   tls.crt: {{ ternary (b64enc (trim $ca.Cert)) (b64enc (trim .Values.webhook.crtPEM)) (empty .Values.webhook.crtPEM) }}
@@ -78,6 +123,7 @@ metadata:
   {{- end }}
   labels:
     linkerd.io/extension: jaeger
+    {{- with .Values.commonLabels }}{{ toYaml . | trim | nindent 4 }}{{- end }}
 webhooks:
 - name: jaeger-injector.linkerd.io
   {{- if .Values.webhook.namespaceSelector }}
@@ -104,6 +150,7 @@ webhooks:
     apiGroups: [""]
     apiVersions: ["v1"]
     resources: ["pods"]
+    scope: "Namespaced"
   sideEffects: None
 {{ if .Values.jaeger.enabled -}}
 ---
@@ -114,6 +161,9 @@ kind: ServiceAccount
 apiVersion: v1
 metadata:
   name: jaeger
-  {{ include "partials.namespace" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    linkerd.io/extension: jaeger
+    {{- with .Values.commonLabels }}{{ toYaml . | trim | nindent 4 }}{{- end }}
 {{- include "partials.image-pull-secrets" .Values.imagePullSecrets }}
 {{ end -}}

@@ -14,33 +14,38 @@ import (
 	log "github.com/sirupsen/logrus"
 	admissionv1beta1 "k8s.io/api/admission/v1beta1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/yaml"
 )
 
 const (
-	collectorSvcAddrAnnotation    = l5dLabels.ProxyConfigAnnotationsPrefix + "/trace-collector"
-	collectorSvcAccountAnnotation = l5dLabels.ProxyConfigAnnotationsPrefixAlpha +
+	collectorSvcAddrAnnotation       = l5dLabels.ProxyConfigAnnotationsPrefix + "/trace-collector"
+	collectorTraceProtocolAnnotation = l5dLabels.ProxyConfigAnnotationsPrefix + "/trace-collector-protocol"
+	collectorTraceSvcNameAnnotation  = l5dLabels.ProxyConfigAnnotationsPrefix + "/trace-collector-name"
+	collectorSvcAccountAnnotation    = l5dLabels.ProxyConfigAnnotationsPrefixAlpha +
 		"/trace-collector-service-account"
 )
 
 // Params holds the values used in the patch template
 type Params struct {
-	ProxyIndex          int
-	CollectorSvcAddr    string
-	CollectorSvcAccount string
-	ClusterDomain       string
-	LinkerdNamespace    string
+	ProxyPath              string
+	CollectorSvcAddr       string
+	CollectorTraceProtocol string
+	CollectorTraceSvcName  string
+	CollectorSvcAccount    string
+	ClusterDomain          string
+	LinkerdNamespace       string
 }
 
 // Mutate returns an AdmissionResponse containing the patch, if any, to apply
 // to the proxy
-func Mutate(collectorSvcAddr, collectorSvcAccount, clusterDomain, linkerdNamespace string) webhook.Handler {
+func Mutate(collectorSvcAddr, collectorTraceProtocol, collectorTraceSvcName, collectorSvcAccount, clusterDomain, linkerdNamespace string) webhook.Handler {
 	return func(
-		ctx context.Context,
-		api *k8s.API,
+		_ context.Context,
+		api *k8s.MetadataAPI,
 		request *admissionv1beta1.AdmissionRequest,
-		recorder record.EventRecorder,
+		_ record.EventRecorder,
 	) (*admissionv1beta1.AdmissionResponse, error) {
 		log.Debugf("request object bytes: %s", request.Object.Raw)
 
@@ -58,17 +63,19 @@ func Mutate(collectorSvcAddr, collectorSvcAccount, clusterDomain, linkerdNamespa
 			return nil, err
 		}
 		params := Params{
-			ProxyIndex:          webhook.GetProxyContainerIndex(pod.Spec.Containers),
-			CollectorSvcAddr:    collectorSvcAddr,
-			CollectorSvcAccount: collectorSvcAccount,
-			ClusterDomain:       clusterDomain,
-			LinkerdNamespace:    linkerdNamespace,
+			ProxyPath:              webhook.GetProxyContainerPath(pod.Spec),
+			CollectorSvcAddr:       collectorSvcAddr,
+			CollectorTraceProtocol: collectorTraceProtocol,
+			CollectorTraceSvcName:  collectorTraceSvcName,
+			CollectorSvcAccount:    collectorSvcAccount,
+			ClusterDomain:          clusterDomain,
+			LinkerdNamespace:       linkerdNamespace,
 		}
-		if params.ProxyIndex < 0 || labels.IsTracingEnabled(pod) {
+		if params.ProxyPath == "" || labels.IsTracingEnabled(pod) {
 			return admissionResponse, nil
 		}
 
-		namespace, err := api.NS().Lister().Get(request.Namespace)
+		namespace, err := api.Get(k8s.NS, request.Namespace)
 		if err != nil {
 			return nil, err
 		}
@@ -92,16 +99,22 @@ func Mutate(collectorSvcAddr, collectorSvcAccount, clusterDomain, linkerdNamespa
 	}
 }
 
-func applyOverrides(ns *corev1.Namespace, pod *corev1.Pod, params *Params) {
-	ann := ns.GetAnnotations()
-	if ann == nil {
-		ann = map[string]string{}
+func applyOverrides(ns metav1.Object, pod *corev1.Pod, params *Params) {
+	ann := map[string]string{}
+	for k, v := range ns.GetAnnotations() {
+		ann[k] = v
 	}
 	for k, v := range pod.Annotations {
 		ann[k] = v
 	}
 	if override, ok := ann[collectorSvcAddrAnnotation]; ok {
 		params.CollectorSvcAddr = override
+	}
+	if override, ok := ann[collectorTraceProtocolAnnotation]; ok {
+		params.CollectorTraceProtocol = override
+	}
+	if override, ok := ann[collectorTraceSvcNameAnnotation]; ok {
+		params.CollectorTraceSvcName = override
 	}
 	if override, ok := ann[collectorSvcAccountAnnotation]; ok {
 		params.CollectorSvcAccount = override

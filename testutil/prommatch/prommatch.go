@@ -18,6 +18,8 @@ package prommatch
 import (
 	"bytes"
 	"fmt"
+	"net"
+	"net/netip"
 	"regexp"
 
 	dto "github.com/prometheus/client_model/go"
@@ -118,10 +120,24 @@ func Absent() LabelMatcher {
 	}
 }
 
+// Any is when you want to select a series which has a certain label, but don't care about the value.
+func Any() LabelMatcher {
+	return func(s string) bool {
+		return s != ""
+	}
+}
+
 // HasValueLike is used for selecting time series based on value.
 func HasValueLike(f func(float64) bool) Expression {
 	return funcMatcher(func(sp *model.Sample) bool {
 		return f(float64(sp.Value))
+	})
+}
+
+// HasValueOf is used for selecting time series based on a specific value.
+func HasValueOf(f float64) Expression {
+	return funcMatcher(func(sp *model.Sample) bool {
+		return f == float64(sp.Value)
 	})
 }
 
@@ -130,6 +146,24 @@ func HasPositiveValue() Expression {
 	return HasValueLike(func(f float64) bool {
 		return f > 0
 	})
+}
+
+// IsAddr is used to check if the value is an IP:port combo, where IP can be
+// an IPv4 or an IPv6
+func IsAddr() LabelMatcher {
+	return func(s string) bool {
+		if _, err := netip.ParseAddrPort(s); err != nil {
+			return false
+		}
+		return true
+	}
+}
+
+// IsIP use used to check if the value is an IPv4 or IPv6
+func IsIP() LabelMatcher {
+	return func(s string) bool {
+		return net.ParseIP(s) != nil
+	}
 }
 
 func hasName(metricName string) Expression {

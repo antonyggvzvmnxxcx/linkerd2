@@ -14,7 +14,6 @@ import (
 )
 
 const (
-	defaultDockerRegistry                = "cr.l5d.io/linkerd"
 	defaultLinkerdNamespace              = "linkerd"
 	defaultMulticlusterNamespace         = "linkerd-multicluster"
 	defaultGatewayName                   = "linkerd-gateway"
@@ -22,6 +21,7 @@ const (
 	helmMulticlusterLinkDefaultChartName = "linkerd-multicluster-link"
 	tokenKey                             = "token"
 
+	saNameAnnotationKey       = "kubernetes.io/service-account.name"
 	defaultServiceAccountName = "linkerd-service-mirror-remote-access-default"
 )
 

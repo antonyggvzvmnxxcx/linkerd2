@@ -1,20 +1,7 @@
 import 'whatwg-fetch';
-import { emptyMetric, processMultiResourceRollup, processSingleResourceRollup } from './util/MetricUtils.jsx';
-import { handlePageVisibility, withPageVisibility } from './util/PageVisibility.jsx';
-import { resourceTypeToCamelCase, singularResource } from './util/Utils.js';
-import AddResources from './AddResources.jsx';
-import EdgesTable from './EdgesTable.jsx';
-import ErrorBanner from './ErrorBanner.jsx';
 import Grid from '@material-ui/core/Grid';
-import MetricsTable from './MetricsTable.jsx';
-import Octopus from './Octopus.jsx';
 import PropTypes from 'prop-types';
 import React from 'react';
-import ServiceDetail from './ServiceDetail.jsx';
-import SimpleChip from './util/Chip.jsx';
-import Spinner from './util/Spinner.jsx';
-import TopRoutesTabs from './TopRoutesTabs.jsx';
-import TrafficSplitDetail from './TrafficSplitDetail.jsx';
 import { Trans } from '@lingui/macro';
 import Typography from '@material-ui/core/Typography';
 import _filter from 'lodash/filter';
@@ -25,6 +12,18 @@ import _isEqual from 'lodash/isEqual';
 import _isNil from 'lodash/isNil';
 import _merge from 'lodash/merge';
 import _reduce from 'lodash/reduce';
+import TopRoutesTabs from './TopRoutesTabs.jsx';
+import Spinner from './util/Spinner.jsx';
+import SimpleChip from './util/Chip.jsx';
+import ServiceDetail from './ServiceDetail.jsx';
+import Octopus from './Octopus.jsx';
+import MetricsTable from './MetricsTable.jsx';
+import ErrorBanner from './ErrorBanner.jsx';
+import EdgesTable from './EdgesTable.jsx';
+import AddResources from './AddResources.jsx';
+import { resourceTypeToCamelCase, singularResource } from './util/Utils.js';
+import { handlePageVisibility, withPageVisibility } from './util/PageVisibility.jsx';
+import { emptyMetric, processMultiResourceRollup, processSingleResourceRollup } from './util/MetricUtils.jsx';
 import { processEdges } from './util/EdgesUtils.jsx';
 import { withContext } from './util/AppContext.jsx';
 
@@ -266,7 +265,6 @@ export class ResourceDetailBase extends React.Component {
         this.setState({
           resourceMetrics,
           resourceIsMeshed,
-          resourceRsp,
           podMetrics: podMetricsForResource,
           upstreamMetrics,
           downstreamMetrics,
@@ -308,7 +306,6 @@ export class ResourceDetailBase extends React.Component {
     const {
       resourceName,
       resourceType,
-      resourceRsp,
       namespace,
       resourceMetrics,
       edges,
@@ -350,15 +347,6 @@ export class ResourceDetailBase extends React.Component {
 
     const showNoTrafficMsg = resourceIsMeshed && (Date.now() - lastMetricReceivedTime > showNoTrafficMsgDelayMs);
 
-    if (resourceType === 'trafficsplit') {
-      return (
-        <TrafficSplitDetail
-          resourceType={resourceType}
-          resourceName={resourceName}
-          resourceMetrics={resourceMetrics}
-          resourceRsp={resourceRsp} />
-      );
-    }
     if (resourceType === 'service') {
       return (
         <ServiceDetail

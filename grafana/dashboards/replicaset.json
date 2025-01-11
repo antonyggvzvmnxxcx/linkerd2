@@ -1,7 +1,7 @@
 {
   "__inputs": [
     {
-      "name": "DS_PROMETHEUS",
+      "name": "datasource",
       "label": "prometheus",
       "description": "",
       "type": "datasource",
@@ -74,7 +74,7 @@
     "iteration": 1573121539385,
     "links": [],
     "panels": [
-      {
+      {        
         "content": "<div style=\"display: flex; align-items: center\">\n  <img src=\"https://linkerd.io/images/identity/favicon/linkerd-favicon.png\" style=\"height:32px;\"/>&nbsp;\n  <span style=\"font-size: 32px\">replicaset/$replicaset</span>\n</div>",
         "gridPos": {
           "h": 2,
@@ -99,7 +99,10 @@
           "rgba(237, 129, 40, 0.89)",
           "#299c46"
         ],
-        "datasource": "${DS_PROMETHEUS}",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
         "decimals": null,
         "format": "percentunit",
         "gauge": {
@@ -153,7 +156,7 @@
         "tableColumn": "",
         "targets": [
           {
-            "expr": "sum(irate(response_total{classification=\"success\", namespace=\"$namespace\", replicaset=\"$replicaset\", direction=\"inbound\"}[30s])) / sum(irate(response_total{namespace=\"$namespace\", replicaset=\"$replicaset\", direction=\"inbound\"}[30s]))",
+            "expr": "sum(irate(response_total{classification=\"success\", namespace=\"$namespace\", replicaset=\"$replicaset\", direction=\"inbound\"}[$__rate_interval])) / sum(irate(response_total{namespace=\"$namespace\", replicaset=\"$replicaset\", direction=\"inbound\"}[$__rate_interval]))",
             "format": "time_series",
             "instant": false,
             "intervalFactor": 1,
@@ -184,7 +187,10 @@
           "rgba(237, 129, 40, 0.89)",
           "#d44a3a"
         ],
-        "datasource": "${DS_PROMETHEUS}",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
         "decimals": null,
         "format": "none",
         "gauge": {
@@ -238,7 +244,7 @@
         "tableColumn": "",
         "targets": [
           {
-            "expr": "sum(irate(request_total{namespace=\"$namespace\", replicaset=\"$replicaset\", direction=\"inbound\"}[30s]))",
+            "expr": "sum(irate(request_total{namespace=\"$namespace\", replicaset=\"$replicaset\", direction=\"inbound\"}[$__rate_interval]))",
             "format": "time_series",
             "instant": false,
             "intervalFactor": 1,
@@ -269,7 +275,10 @@
           "rgba(237, 129, 40, 0.89)",
           "#d44a3a"
         ],
-        "datasource": "${DS_PROMETHEUS}",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
         "decimals": null,
         "format": "none",
         "gauge": {
@@ -353,7 +362,10 @@
           "rgba(237, 129, 40, 0.89)",
           "#d44a3a"
         ],
-        "datasource": "${DS_PROMETHEUS}",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
         "format": "none",
         "gauge": {
           "maxValue": 100,
@@ -448,7 +460,10 @@
         "bars": false,
         "dashLength": 10,
         "dashes": false,
-        "datasource": "${DS_PROMETHEUS}",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
         "fill": 1,
         "gridPos": {
           "h": 7,
@@ -481,7 +496,7 @@
         "steppedLine": false,
         "targets": [
           {
-            "expr": "sum(irate(response_total{classification=\"success\", namespace=\"$namespace\", replicaset=\"$replicaset\", direction=\"inbound\"}[30s])) by (replicaset) / sum(irate(response_total{namespace=\"$namespace\", replicaset=\"$replicaset\", direction=\"inbound\"}[30s])) by (replicaset)",
+            "expr": "sum(irate(response_total{classification=\"success\", namespace=\"$namespace\", replicaset=\"$replicaset\", direction=\"inbound\"}[$__rate_interval])) by (replicaset) / sum(irate(response_total{namespace=\"$namespace\", replicaset=\"$replicaset\", direction=\"inbound\"}[$__rate_interval])) by (replicaset)",
             "format": "time_series",
             "intervalFactor": 1,
             "legendFormat": "rs/{{replicaset}}",
@@ -535,7 +550,10 @@
         "bars": false,
         "dashLength": 10,
         "dashes": false,
-        "datasource": "${DS_PROMETHEUS}",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
         "fill": 0,
         "gridPos": {
           "h": 7,
@@ -568,14 +586,14 @@
         "steppedLine": false,
         "targets": [
           {
-            "expr": "sum(irate(request_total{namespace=\"$namespace\", replicaset=\"$replicaset\", direction=\"inbound\", tls=\"true\"}[30s])) by (replicaset)",
+            "expr": "sum(irate(request_total{namespace=\"$namespace\", replicaset=\"$replicaset\", direction=\"inbound\", tls=\"true\"}[$__rate_interval])) by (replicaset)",
             "format": "time_series",
             "intervalFactor": 1,
             "legendFormat": "🔒rs/{{replicaset}}",
             "refId": "A"
           },
           {
-            "expr": "sum(irate(request_total{namespace=\"$namespace\", replicaset=\"$replicaset\", direction=\"inbound\", tls!=\"true\"}[30s])) by (replicaset)",
+            "expr": "sum(irate(request_total{namespace=\"$namespace\", replicaset=\"$replicaset\", direction=\"inbound\", tls!=\"true\"}[$__rate_interval])) by (replicaset)",
             "format": "time_series",
             "intervalFactor": 1,
             "legendFormat": "rs/{{replicaset}}",
@@ -629,7 +647,10 @@
         "bars": false,
         "dashLength": 10,
         "dashes": false,
-        "datasource": "${DS_PROMETHEUS}",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
         "fill": 1,
         "gridPos": {
           "h": 7,
@@ -662,14 +683,14 @@
         "steppedLine": false,
         "targets": [
           {
-            "expr": "histogram_quantile(0.5, sum(irate(response_latency_ms_bucket{namespace=\"$namespace\", replicaset=\"$replicaset\", direction=\"inbound\"}[30s])) by (le, replicaset))",
+            "expr": "histogram_quantile(0.5, sum(irate(response_latency_ms_bucket{namespace=\"$namespace\", replicaset=\"$replicaset\", direction=\"inbound\"}[$__rate_interval])) by (le, replicaset))",
             "format": "time_series",
             "intervalFactor": 1,
             "legendFormat": "p50 rs/{{replicaset}}",
             "refId": "A"
           },
           {
-            "expr": "histogram_quantile(0.95, sum(irate(response_latency_ms_bucket{namespace=\"$namespace\", replicaset=\"$replicaset\", direction=\"inbound\"}[30s])) by (le, replicaset))",
+            "expr": "histogram_quantile(0.95, sum(irate(response_latency_ms_bucket{namespace=\"$namespace\", replicaset=\"$replicaset\", direction=\"inbound\"}[$__rate_interval])) by (le, replicaset))",
             "format": "time_series",
             "hide": false,
             "intervalFactor": 1,
@@ -677,7 +698,7 @@
             "refId": "B"
           },
           {
-            "expr": "histogram_quantile(0.99, sum(irate(response_latency_ms_bucket{namespace=\"$namespace\", replicaset=\"$replicaset\", direction=\"inbound\"}[30s])) by (le, replicaset))",
+            "expr": "histogram_quantile(0.99, sum(irate(response_latency_ms_bucket{namespace=\"$namespace\", replicaset=\"$replicaset\", direction=\"inbound\"}[$__rate_interval])) by (le, replicaset))",
             "format": "time_series",
             "intervalFactor": 1,
             "legendFormat": "p99 rs/{{replicaset}}",
@@ -741,7 +762,10 @@
             "bars": false,
             "dashLength": 10,
             "dashes": false,
-            "datasource": "${DS_PROMETHEUS}",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
             "fill": 1,
             "gridPos": {
               "h": 7,
@@ -828,7 +852,10 @@
             "bars": false,
             "dashLength": 10,
             "dashes": false,
-            "datasource": "${DS_PROMETHEUS}",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
             "fill": 0,
             "gridPos": {
               "h": 7,
@@ -922,7 +949,10 @@
               "mode": "spectrum"
             },
             "dataFormat": "timeseries",
-            "datasource": "${DS_PROMETHEUS}",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
             "gridPos": {
               "h": 7,
               "w": 8,
@@ -1053,7 +1083,10 @@
         "bars": false,
         "dashLength": 10,
         "dashes": false,
-        "datasource": "${DS_PROMETHEUS}",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
         "fill": 1,
         "gridPos": {
           "h": 7,
@@ -1093,7 +1126,7 @@
         "steppedLine": false,
         "targets": [
           {
-            "expr": "sum(irate(response_total{classification=\"success\", replicaset!=\"\", replicaset=\"$inbound\", dst_namespace=\"$namespace\", dst_replicaset=\"$replicaset\", direction=\"outbound\"}[30s])) by (replicaset, pod) / sum(irate(response_total{replicaset!=\"\", replicaset=\"$inbound\", dst_namespace=\"$namespace\", dst_replicaset=\"$replicaset\", direction=\"outbound\"}[30s])) by (replicaset, pod)",
+            "expr": "sum(irate(response_total{classification=\"success\", replicaset!=\"\", replicaset=\"$inbound\", dst_namespace=\"$namespace\", dst_replicaset=\"$replicaset\", direction=\"outbound\"}[$__rate_interval])) by (replicaset, pod) / sum(irate(response_total{replicaset!=\"\", replicaset=\"$inbound\", dst_namespace=\"$namespace\", dst_replicaset=\"$replicaset\", direction=\"outbound\"}[$__rate_interval])) by (replicaset, pod)",
             "format": "time_series",
             "instant": false,
             "intervalFactor": 1,
@@ -1148,7 +1181,10 @@
         "bars": false,
         "dashLength": 10,
         "dashes": false,
-        "datasource": "${DS_PROMETHEUS}",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
         "fill": 0,
         "gridPos": {
           "h": 7,
@@ -1188,14 +1224,14 @@
         "steppedLine": false,
         "targets": [
           {
-            "expr": "sum(irate(request_total{replicaset!=\"\", replicaset=\"$inbound\", dst_namespace=\"$namespace\", dst_replicaset=\"$replicaset\", direction=\"outbound\", tls=\"true\"}[30s])) by (replicaset, pod)",
+            "expr": "sum(irate(request_total{replicaset!=\"\", replicaset=\"$inbound\", dst_namespace=\"$namespace\", dst_replicaset=\"$replicaset\", direction=\"outbound\", tls=\"true\"}[$__rate_interval])) by (replicaset, pod)",
             "format": "time_series",
             "intervalFactor": 1,
             "legendFormat": "🔒po/{{pod}}",
             "refId": "A"
           },
           {
-            "expr": "sum(irate(request_total{replicaset!=\"\", replicaset=\"$inbound\", dst_namespace=\"$namespace\", dst_replicaset=\"$replicaset\", direction=\"outbound\", tls!=\"true\"}[30s])) by (replicaset, pod)",
+            "expr": "sum(irate(request_total{replicaset!=\"\", replicaset=\"$inbound\", dst_namespace=\"$namespace\", dst_replicaset=\"$replicaset\", direction=\"outbound\", tls!=\"true\"}[$__rate_interval])) by (replicaset, pod)",
             "format": "time_series",
             "intervalFactor": 1,
             "legendFormat": "po/{{pod}}",
@@ -1249,7 +1285,10 @@
         "bars": false,
         "dashLength": 10,
         "dashes": false,
-        "datasource": "${DS_PROMETHEUS}",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
         "fill": 1,
         "gridPos": {
           "h": 7,
@@ -1289,21 +1328,21 @@
         "steppedLine": false,
         "targets": [
           {
-            "expr": "histogram_quantile(0.5, sum(rate(response_latency_ms_bucket{replicaset!=\"\", replicaset=\"$inbound\", dst_namespace=\"$namespace\", dst_replicaset=\"$replicaset\", direction=\"outbound\"}[30s])) by (le, replicaset))",
+            "expr": "histogram_quantile(0.5, sum(rate(response_latency_ms_bucket{replicaset!=\"\", replicaset=\"$inbound\", dst_namespace=\"$namespace\", dst_replicaset=\"$replicaset\", direction=\"outbound\"}[$__rate_interval])) by (le, replicaset))",
             "format": "time_series",
             "intervalFactor": 1,
             "legendFormat": "P50 rs/{{replicaset}}",
             "refId": "A"
           },
           {
-            "expr": "histogram_quantile(0.95, sum(rate(response_latency_ms_bucket{replicaset!=\"\", replicaset=\"$inbound\", dst_namespace=\"$namespace\", dst_replicaset=\"$replicaset\", direction=\"outbound\"}[30s])) by (le, replicaset))",
+            "expr": "histogram_quantile(0.95, sum(rate(response_latency_ms_bucket{replicaset!=\"\", replicaset=\"$inbound\", dst_namespace=\"$namespace\", dst_replicaset=\"$replicaset\", direction=\"outbound\"}[$__rate_interval])) by (le, replicaset))",
             "format": "time_series",
             "intervalFactor": 1,
             "legendFormat": "P95 rs/{{replicaset}}",
             "refId": "B"
           },
           {
-            "expr": "histogram_quantile(0.99, sum(rate(response_latency_ms_bucket{replicaset!=\"\", replicaset=\"$inbound\", dst_namespace=\"$namespace\", dst_replicaset=\"$replicaset\", direction=\"outbound\"}[30s])) by (le, replicaset))",
+            "expr": "histogram_quantile(0.99, sum(rate(response_latency_ms_bucket{replicaset!=\"\", replicaset=\"$inbound\", dst_namespace=\"$namespace\", dst_replicaset=\"$replicaset\", direction=\"outbound\"}[$__rate_interval])) by (le, replicaset))",
             "format": "time_series",
             "intervalFactor": 1,
             "legendFormat": "P99 rs/{{replicaset}}",
@@ -1386,7 +1425,10 @@
         "bars": false,
         "dashLength": 10,
         "dashes": false,
-        "datasource": "${DS_PROMETHEUS}",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
         "fill": 1,
         "gridPos": {
           "h": 7,
@@ -1419,7 +1461,7 @@
         "steppedLine": false,
         "targets": [
           {
-            "expr": "sum(irate(response_total{classification=\"success\", namespace=\"$namespace\", replicaset=\"$replicaset\", direction=\"outbound\"}[30s])) by (dst_replicaset) / sum(irate(response_total{namespace=\"$namespace\", replicaset=\"$replicaset\", direction=\"outbound\"}[30s])) by (dst_replicaset)",
+            "expr": "sum(irate(response_total{classification=\"success\", namespace=\"$namespace\", replicaset=\"$replicaset\", direction=\"outbound\"}[$__rate_interval])) by (dst_replicaset) / sum(irate(response_total{namespace=\"$namespace\", replicaset=\"$replicaset\", direction=\"outbound\"}[$__rate_interval])) by (dst_replicaset)",
             "format": "time_series",
             "intervalFactor": 1,
             "legendFormat": "rs/{{dst_replicaset}}",
@@ -1473,7 +1515,10 @@
         "bars": false,
         "dashLength": 10,
         "dashes": false,
-        "datasource": "${DS_PROMETHEUS}",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
         "fill": 0,
         "gridPos": {
           "h": 7,
@@ -1506,14 +1551,14 @@
         "steppedLine": false,
         "targets": [
           {
-            "expr": "sum(irate(request_total{namespace=\"$namespace\", replicaset=\"$replicaset\", direction=\"outbound\", tls=\"true\"}[30s])) by (dst_replicaset)",
+            "expr": "sum(irate(request_total{namespace=\"$namespace\", replicaset=\"$replicaset\", direction=\"outbound\", tls=\"true\"}[$__rate_interval])) by (dst_replicaset)",
             "format": "time_series",
             "intervalFactor": 1,
             "legendFormat": "🔒rs/{{dst_replicaset}}",
             "refId": "A"
           },
           {
-            "expr": "sum(irate(request_total{namespace=\"$namespace\", replicaset=\"$replicaset\", direction=\"outbound\", tls!=\"true\"}[30s])) by (dst_replicaset)",
+            "expr": "sum(irate(request_total{namespace=\"$namespace\", replicaset=\"$replicaset\", direction=\"outbound\", tls!=\"true\"}[$__rate_interval])) by (dst_replicaset)",
             "format": "time_series",
             "intervalFactor": 1,
             "legendFormat": "rs/{{dst_replicaset}}",
@@ -1566,7 +1611,10 @@
         "bars": false,
         "dashLength": 10,
         "dashes": false,
-        "datasource": "${DS_PROMETHEUS}",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
         "fill": 1,
         "gridPos": {
           "h": 7,
@@ -1599,7 +1647,7 @@
         "steppedLine": false,
         "targets": [
           {
-            "expr": "histogram_quantile(0.95, sum(rate(response_latency_ms_bucket{namespace=\"$namespace\", replicaset=\"$replicaset\", direction=\"outbound\"}[30s])) by (le, dst_replicaset))",
+            "expr": "histogram_quantile(0.95, sum(rate(response_latency_ms_bucket{namespace=\"$namespace\", replicaset=\"$replicaset\", direction=\"outbound\"}[$__rate_interval])) by (le, dst_replicaset))",
             "format": "time_series",
             "intervalFactor": 1,
             "legendFormat": "P95 rs/{{dst_replicaset}}",
@@ -1662,7 +1710,10 @@
             "bars": false,
             "dashLength": 10,
             "dashes": false,
-            "datasource": "${DS_PROMETHEUS}",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
             "fill": 1,
             "gridPos": {
               "h": 7,
@@ -1749,7 +1800,10 @@
             "bars": false,
             "dashLength": 10,
             "dashes": false,
-            "datasource": "${DS_PROMETHEUS}",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
             "fill": 0,
             "gridPos": {
               "h": 7,
@@ -1843,7 +1897,10 @@
               "mode": "spectrum"
             },
             "dataFormat": "timeseries",
-            "datasource": "${DS_PROMETHEUS}",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
             "gridPos": {
               "h": 7,
               "w": 8,
@@ -1956,7 +2013,10 @@
             "bars": false,
             "dashLength": 10,
             "dashes": false,
-            "datasource": "${DS_PROMETHEUS}",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
             "fill": 1,
             "gridPos": {
               "h": 7,
@@ -1989,7 +2049,7 @@
             "steppedLine": false,
             "targets": [
               {
-                "expr": "sum(irate(response_total{classification=\"success\", namespace=\"$namespace\", replicaset=\"$replicaset\", dst_replicaset=\"$outbound\", direction=\"outbound\"}[30s])) by (dst_replicaset) / sum(irate(response_total{namespace=\"$namespace\", replicaset=\"$replicaset\", dst_replicaset=\"$outbound\", direction=\"outbound\"}[30s])) by (dst_replicaset)",
+                "expr": "sum(irate(response_total{classification=\"success\", namespace=\"$namespace\", replicaset=\"$replicaset\", dst_replicaset=\"$outbound\", direction=\"outbound\"}[$__rate_interval])) by (dst_replicaset) / sum(irate(response_total{namespace=\"$namespace\", replicaset=\"$replicaset\", dst_replicaset=\"$outbound\", direction=\"outbound\"}[$__rate_interval])) by (dst_replicaset)",
                 "format": "time_series",
                 "intervalFactor": 1,
                 "legendFormat": "rs/{{dst_replicaset}}",
@@ -2043,7 +2103,10 @@
             "bars": false,
             "dashLength": 10,
             "dashes": false,
-            "datasource": "${DS_PROMETHEUS}",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
             "fill": 0,
             "gridPos": {
               "h": 7,
@@ -2076,14 +2139,14 @@
             "steppedLine": false,
             "targets": [
               {
-                "expr": "sum(irate(request_total{namespace=\"$namespace\", replicaset=\"$replicaset\", dst_replicaset=\"$outbound\", direction=\"outbound\", tls=\"true\"}[30s])) by (dst_replicaset)",
+                "expr": "sum(irate(request_total{namespace=\"$namespace\", replicaset=\"$replicaset\", dst_replicaset=\"$outbound\", direction=\"outbound\", tls=\"true\"}[$__rate_interval])) by (dst_replicaset)",
                 "format": "time_series",
                 "intervalFactor": 1,
                 "legendFormat": "🔒rs/{{dst_replicaset}}",
                 "refId": "A"
               },
               {
-                "expr": "sum(irate(request_total{namespace=\"$namespace\", replicaset=\"$replicaset\", dst_replicaset=\"$outbound\", direction=\"outbound\", tls!=\"true\"}[30s])) by (dst_replicaset)",
+                "expr": "sum(irate(request_total{namespace=\"$namespace\", replicaset=\"$replicaset\", dst_replicaset=\"$outbound\", direction=\"outbound\", tls!=\"true\"}[$__rate_interval])) by (dst_replicaset)",
                 "format": "time_series",
                 "intervalFactor": 1,
                 "legendFormat": "rs/{{dst_replicaset}}",
@@ -2136,7 +2199,10 @@
             "bars": false,
             "dashLength": 10,
             "dashes": false,
-            "datasource": "${DS_PROMETHEUS}",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "${datasource}"
+            },
             "fill": 1,
             "gridPos": {
               "h": 7,
@@ -2169,21 +2235,21 @@
             "steppedLine": false,
             "targets": [
               {
-                "expr": "histogram_quantile(0.5, sum(rate(response_latency_ms_bucket{namespace=\"$namespace\", replicaset=\"$replicaset\", dst_replicaset=\"$outbound\", direction=\"outbound\"}[30s])) by (le, dst_replicaset))",
+                "expr": "histogram_quantile(0.5, sum(rate(response_latency_ms_bucket{namespace=\"$namespace\", replicaset=\"$replicaset\", dst_replicaset=\"$outbound\", direction=\"outbound\"}[$__rate_interval])) by (le, dst_replicaset))",
                 "format": "time_series",
                 "intervalFactor": 1,
                 "legendFormat": "P50 rs/{{dst_replicaset}}",
                 "refId": "A"
               },
               {
-                "expr": "histogram_quantile(0.95, sum(rate(response_latency_ms_bucket{namespace=\"$namespace\", replicaset=\"$replicaset\", dst_replicaset=\"$outbound\", direction=\"outbound\"}[30s])) by (le, dst_replicaset))",
+                "expr": "histogram_quantile(0.95, sum(rate(response_latency_ms_bucket{namespace=\"$namespace\", replicaset=\"$replicaset\", dst_replicaset=\"$outbound\", direction=\"outbound\"}[$__rate_interval])) by (le, dst_replicaset))",
                 "format": "time_series",
                 "intervalFactor": 1,
                 "legendFormat": "P95 rs/{{dst_replicaset}}",
                 "refId": "B"
               },
               {
-                "expr": "histogram_quantile(0.99, sum(rate(response_latency_ms_bucket{namespace=\"$namespace\", replicaset=\"$replicaset\", dst_replicaset=\"$outbound\", direction=\"outbound\"}[30s])) by (le, dst_replicaset))",
+                "expr": "histogram_quantile(0.99, sum(rate(response_latency_ms_bucket{namespace=\"$namespace\", replicaset=\"$replicaset\", dst_replicaset=\"$outbound\", direction=\"outbound\"}[$__rate_interval])) by (le, dst_replicaset))",
                 "format": "time_series",
                 "intervalFactor": 1,
                 "legendFormat": "P99 rs/{{dst_replicaset}}",
@@ -2263,12 +2329,29 @@
     "templating": {
       "list": [
         {
+          "current": {
+            "text": "default",
+            "value": "default"
+          },
+          "hide": 0,
+          "label": "Data Source",
+          "name": "datasource",
+          "options": [],
+          "query": "prometheus",
+          "refresh": 1,
+          "regex": "",
+          "type": "datasource"
+        },
+        {
           "allValue": ".*",
           "current": {
             "text": "default",
             "value": "default"
           },
-          "datasource": "${DS_PROMETHEUS}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
           "definition": "label_values(process_start_time_seconds{replicaset!=\"\"}, namespace)",
           "hide": 0,
           "includeAll": false,
@@ -2293,7 +2376,10 @@
             "text": "rs1",
             "value": "rs1"
           },
-          "datasource": "${DS_PROMETHEUS}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
           "definition": "label_values(process_start_time_seconds{namespace=\"$namespace\"}, replicaset)",
           "hide": 0,
           "includeAll": false,
@@ -2318,7 +2404,10 @@
             "text": "All",
             "value": "$__all"
           },
-          "datasource": "${DS_PROMETHEUS}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
           "definition": "label_values(request_total{dst_namespace=\"$namespace\", dst_replicaset=\"$replicaset\"}, replicaset)",
           "hide": 2,
           "includeAll": true,
@@ -2343,7 +2432,10 @@
             "text": "All",
             "value": "$__all"
           },
-          "datasource": "${DS_PROMETHEUS}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
           "definition": "label_values(request_total{namespace=\"$namespace\", replicaset=\"$replicaset\"}, dst_replicaset)",
           "hide": 2,
           "includeAll": true,

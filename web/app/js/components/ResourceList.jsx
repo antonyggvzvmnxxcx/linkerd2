@@ -1,13 +1,13 @@
 import 'whatwg-fetch';
 
+import PropTypes from 'prop-types';
+import React from 'react';
+import { Trans } from '@lingui/macro';
 import { metricsPropType, processSingleResourceRollup } from './util/MetricUtils.jsx';
 
 import ErrorBanner from './ErrorBanner.jsx';
 import MetricsTable from './MetricsTable.jsx';
-import PropTypes from 'prop-types';
-import React from 'react';
 import Spinner from './util/Spinner.jsx';
-import { Trans } from '@lingui/macro';
 import { apiErrorPropType } from './util/ApiHelpers.jsx';
 import withREST from './util/withREST.jsx';
 
@@ -36,13 +36,11 @@ export class ResourceListBase extends React.Component {
           metrics={processedMetrics}
           title={<Trans>tableTitleHTTPMetrics</Trans>} />
 
-        {resource !== 'trafficsplit' &&
         <MetricsTable
           resource={resource}
           isTcpTable
           metrics={processedMetrics}
           title={<Trans>tableTitleTCPMetrics</Trans>} />
-        }
       </React.Fragment>
     );
   };

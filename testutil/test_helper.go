@@ -9,7 +9,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"os"
 	"os/exec"
@@ -25,22 +24,24 @@ import (
 
 // TestHelper provides helpers for running the linkerd integration tests.
 type TestHelper struct {
-	linkerd            string
-	version            string
-	namespace          string
-	vizNamespace       string
-	upgradeFromVersion string
-	clusterDomain      string
-	externalIssuer     bool
-	externalPrometheus bool
-	multicluster       bool
-	multiclusterSrcCtx string
-	multiclusterTgtCtx string
-	uninstall          bool
-	cni                bool
-	calico             bool
-	defaultAllowPolicy string
-	httpClient         http.Client
+	linkerd              string
+	version              string
+	namespace            string
+	vizNamespace         string
+	upgradeFromVersion   string
+	clusterDomain        string
+	externalIssuer       bool
+	externalPrometheus   bool
+	multicluster         bool
+	multiclusterSrcCtx   string
+	multiclusterTgtCtx   string
+	uninstall            bool
+	cni                  bool
+	calico               bool
+	dualStack            bool
+	nativeSidecar        bool
+	defaultInboundPolicy string
+	httpClient           http.Client
 	KubernetesHelper
 	helm
 	installedExtensions []string
@@ -52,7 +53,6 @@ type helm struct {
 	multiclusterChart       string
 	vizChart                string
 	vizStableChart          string
-	stableChart             string
 	releaseName             string
 	multiclusterReleaseName string
 	upgradeFromVersion      string
@@ -100,6 +100,13 @@ var MulticlusterDeployReplicas = map[string]DeploySpec{
 	"linkerd-gateway": {"linkerd-multicluster", 1},
 }
 
+// MulticlusterSourceReplicas is a map containing the number of replicas for the
+// Service Mirror component; component that we'd only expect in the
+// source cluster.
+var MulticlusterSourceReplicas = map[string]DeploySpec{
+	"linkerd-service-mirror-target": {Namespace: "linkerd-multicluster", Replicas: 1},
+}
+
 // ExternalVizDeployReplicas has an external prometheus instance that's in a
 // separate namespace
 var ExternalVizDeployReplicas = map[string]DeploySpec{
@@ -131,7 +138,6 @@ func NewGenericTestHelper(
 	clusterDomain,
 	helmPath,
 	helmCharts,
-	helmStableChart,
 	helmReleaseName,
 	helmMulticlusterReleaseName,
 	helmMulticlusterChart string,
@@ -155,7 +161,6 @@ func NewGenericTestHelper(
 			charts:                  helmCharts,
 			multiclusterChart:       helmMulticlusterChart,
 			multiclusterReleaseName: helmMulticlusterReleaseName,
-			stableChart:             helmStableChart,
 			releaseName:             helmReleaseName,
 			upgradeFromVersion:      upgradeFromVersion,
 		},
@@ -181,7 +186,7 @@ func NewTestHelper() *TestHelper {
 
 	// TODO (matei): clean-up flags
 	k8sContext := flag.String("k8s-context", "", "kubernetes context associated with the test cluster")
-	linkerd := flag.String("linkerd", "", "path to the linkerd binary to test")
+	linkerdExec := flag.String("linkerd", "", "path to the linkerd binary to test")
 	namespace := flag.String("linkerd-namespace", "linkerd", "the namespace where linkerd is installed")
 	vizNamespace := flag.String("viz-namespace", "linkerd-viz", "the namespace where linkerd viz extension is installed")
 	multicluster := flag.Bool("multicluster", false, "when specified the multicluster install functionality is tested")
@@ -192,7 +197,6 @@ func NewTestHelper() *TestHelper {
 	multiclusterHelmChart := flag.String("multicluster-helm-chart", "charts/linkerd-multicluster", "path to linkerd2's multicluster Helm chart")
 	vizHelmChart := flag.String("viz-helm-chart", "charts/linkerd-viz", "path to linkerd2's viz extension Helm chart")
 	vizHelmStableChart := flag.String("viz-helm-stable-chart", "charts/linkerd-viz", "path to linkerd2's viz extension stable Helm chart")
-	helmStableChart := flag.String("helm-stable-chart", "linkerd/linkerd2", "path to linkerd2's stable Helm chart")
 	helmReleaseName := flag.String("helm-release", "", "install linkerd via Helm using this release name")
 	multiclusterHelmReleaseName := flag.String("multicluster-helm-release", "", "install linkerd multicluster via Helm using this release name")
 	upgradeFromVersion := flag.String("upgrade-from-version", "", "when specified, the upgrade test uses it as the base version of the upgrade")
@@ -205,24 +209,22 @@ func NewTestHelper() *TestHelper {
 	uninstall := flag.Bool("uninstall", false, "whether to run the 'linkerd uninstall' integration test")
 	cni := flag.Bool("cni", false, "whether to install linkerd with CNI enabled")
 	calico := flag.Bool("calico", false, "whether to install calico CNI plugin")
-	defaultAllowPolicy := flag.String("default-allow-policy", "", "if non-empty, passed to --set policyController.defaultAllowPolicy at linkerd's install time")
+	dualStack := flag.Bool("dual-stack", false, "whether to run the dual-stack tests")
+	nativeSidecar := flag.Bool("native-sidecar", false, "whether to install using native sidecar injection")
+	defaultInboundPolicy := flag.String("default-inbound-policy", "", "if non-empty, passed to --set proxy.defaultInboundPolicy at linkerd's install time")
 	flag.Parse()
 
 	if !*runTests {
 		exit(0, "integration tests not enabled: enable with -integration-tests")
 	}
 
-	if *linkerd == "" {
+	if *linkerdExec == "" {
 		exit(1, "-linkerd flag is required")
 	}
 
-	if !filepath.IsAbs(*linkerd) {
-		exit(1, "-linkerd path must be absolute")
-	}
-
-	_, err := os.Stat(*linkerd)
+	linkerd, err := filepath.Abs(*linkerdExec)
 	if err != nil {
-		exit(1, "-linkerd binary does not exist")
+		exit(1, fmt.Sprintf("abs: %s", err))
 	}
 
 	if *verbose {
@@ -232,7 +234,7 @@ func NewTestHelper() *TestHelper {
 	}
 
 	testHelper := &TestHelper{
-		linkerd:            *linkerd,
+		linkerd:            linkerd,
 		namespace:          *namespace,
 		vizNamespace:       *vizNamespace,
 		upgradeFromVersion: *upgradeFromVersion,
@@ -245,18 +247,19 @@ func NewTestHelper() *TestHelper {
 			multiclusterChart:       *multiclusterHelmChart,
 			vizChart:                *vizHelmChart,
 			vizStableChart:          *vizHelmStableChart,
-			stableChart:             *helmStableChart,
 			releaseName:             *helmReleaseName,
 			multiclusterReleaseName: *multiclusterHelmReleaseName,
 			upgradeFromVersion:      *upgradeHelmFromVersion,
 		},
-		clusterDomain:      *clusterDomain,
-		externalIssuer:     *externalIssuer,
-		externalPrometheus: *externalPrometheus,
-		cni:                *cni,
-		calico:             *calico,
-		uninstall:          *uninstall,
-		defaultAllowPolicy: *defaultAllowPolicy,
+		clusterDomain:        *clusterDomain,
+		externalIssuer:       *externalIssuer,
+		externalPrometheus:   *externalPrometheus,
+		cni:                  *cni,
+		calico:               *calico,
+		dualStack:            *dualStack,
+		nativeSidecar:        *nativeSidecar,
+		uninstall:            *uninstall,
+		defaultInboundPolicy: *defaultInboundPolicy,
 	}
 
 	version, err := testHelper.LinkerdRun("version", "--client", "--short")
@@ -265,7 +268,7 @@ func NewTestHelper() *TestHelper {
 	}
 	testHelper.version = strings.TrimSpace(version)
 
-	kubernetesHelper, err := NewKubernetesHelper(*k8sContext, testHelper.RetryFor)
+	kubernetesHelper, err := NewKubernetesHelper(*k8sContext, RetryFor)
 	if err != nil {
 		exit(1, fmt.Sprintf("error creating kubernetes helper: %s", err.Error()))
 	}
@@ -349,11 +352,6 @@ func (h *TestHelper) GetLinkerdVizHelmStableChart() string {
 	return h.helm.vizStableChart
 }
 
-// GetHelmStableChart returns the path to the Linkerd Helm stable chart
-func (h *TestHelper) GetHelmStableChart() string {
-	return h.helm.stableChart
-}
-
 // UpgradeHelmFromVersion returns the version from which Linkerd should be upgraded with Helm
 func (h *TestHelper) UpgradeHelmFromVersion() string {
 	return h.helm.upgradeFromVersion
@@ -379,9 +377,9 @@ func (h *TestHelper) Uninstall() bool {
 	return h.uninstall
 }
 
-// DefaultAllowPolicy returns the override value for policyController.defaultAllowPolicy
-func (h *TestHelper) DefaultAllowPolicy() string {
-	return h.defaultAllowPolicy
+// DefaultInboundPolicy returns the override value for proxy.defaultInboundPolicy
+func (h *TestHelper) DefaultInboundPolicy() string {
+	return h.defaultInboundPolicy
 }
 
 // UpgradeFromVersion returns the base version of the upgrade test.
@@ -402,6 +400,16 @@ func (h *TestHelper) CNI() bool {
 // Calico determines whether Calico CNI plug-in is enabled
 func (h *TestHelper) Calico() bool {
 	return h.calico
+}
+
+// DualStack determines whether the DualStack tests are run
+func (h *TestHelper) DualStack() bool {
+	return h.dualStack
+}
+
+// NativeSidecar determines whether native sidecar injection is enabled
+func (h *TestHelper) NativeSidecar() bool {
+	return h.nativeSidecar
 }
 
 // AddInstalledExtension adds an extension name to installedExtensions to
@@ -525,10 +533,10 @@ func (h *TestHelper) KubectlStream(arg ...string) (*Stream, error) {
 }
 
 // HelmUpgrade runs the helm upgrade subcommand, with the provided arguments
-func (h *TestHelper) HelmUpgrade(chart string, arg ...string) (string, string, error) {
+func (h *TestHelper) HelmUpgrade(chart, releaseName string, arg ...string) (string, string, error) {
 	withParams := append([]string{
 		"upgrade",
-		h.helm.releaseName,
+		releaseName,
 		"--kube-context", h.k8sContext,
 		"--namespace", h.namespace,
 		"--timeout", "60m",
@@ -623,7 +631,7 @@ func (h *TestHelper) CheckVersion(serverVersion string) error {
 // RetryFor retries a given function every second until the function returns
 // without an error, or a timeout is reached. If the timeout is reached, it
 // returns the last error received from the function.
-func (h *TestHelper) RetryFor(timeout time.Duration, fn func() error) error {
+func RetryFor(timeout time.Duration, fn func() error) error {
 	err := fn()
 	if err == nil {
 		return nil
@@ -653,14 +661,14 @@ func (h *TestHelper) RetryFor(timeout time.Duration, fn func() error) error {
 // giving pods time to start.
 func (h *TestHelper) HTTPGetURL(url string) (string, error) {
 	var body string
-	err := h.RetryFor(time.Minute, func() error {
+	err := RetryFor(time.Minute, func() error {
 		resp, err := h.httpClient.Get(url)
 		if err != nil {
 			return err
 		}
 
 		defer resp.Body.Close()
-		bytes, err := ioutil.ReadAll(resp.Body)
+		bytes, err := io.ReadAll(resp.Body)
 		if err != nil {
 			return fmt.Errorf("Error reading response body: %w", err)
 		}
@@ -720,7 +728,10 @@ func (h *TestHelper) DownloadCLIBinary(filepath, version string) error {
 	defer resp.Body.Close()
 
 	// Create if it doesn't already exist
-	out, err := os.OpenFile(filepath, os.O_RDWR|os.O_CREATE, 0555)
+	// The CLI binary needs to be executable so we ignore lint errors about
+	// file permissions.
+	//nolint:gosec
+	out, err := os.OpenFile(filepath, os.O_RDWR|os.O_CREATE, 0500)
 	if err != nil {
 		return err
 	}
@@ -732,7 +743,7 @@ func (h *TestHelper) DownloadCLIBinary(filepath, version string) error {
 
 // ReadFile reads a file from disk and returns the contents as a string.
 func ReadFile(file string) (string, error) {
-	b, err := ioutil.ReadFile(file)
+	b, err := os.ReadFile(file)
 	if err != nil {
 		return "", err
 	}

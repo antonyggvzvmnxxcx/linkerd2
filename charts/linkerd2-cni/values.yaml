@@ -10,24 +10,35 @@ ignoreOutboundPorts: ""
 proxyAdminPort: 4191
 # -- Control port for the proxy container
 proxyControlPort: 4190
-# -- Docker image for the CNI plugin
-cniPluginImage:   "cr.l5d.io/linkerd/cni-plugin"
-# -- Tag for the CNI container Docker image
-cniPluginVersion: linkerdVersionValue
+# -- Additional labels to add to all pods
+podLabels: {}
+# -- Labels to apply to all resources
+commonLabels: {}
 # -- Log level for the CNI plugin
 logLevel:         info
 # -- Ports to redirect to proxy
 portsToRedirect:  ""
 # -- User id under which the proxy shall be ran
 proxyUID:         2102
+# -- (int) Optional customisation of the group id under which the proxy shall be ran (the group ID will be omitted if lower than 0)
+proxyGID: -1
 # -- Directory on the host where the CNI plugin binaries reside
 destCNINetDir:    "/etc/cni/net.d"
 # -- Directory on the host where the CNI configuration will be placed
 destCNIBinDir:    "/opt/cni/bin"
 # -- Configures the CNI plugin to use the -w flag for the iptables command
 useWaitFlag:      false
+# -- Variant of iptables that will be used to configure routing. Allowed values
+# are 'nft', 'legacy' and 'plain'. They invoke the 'iptables-nft',
+# 'iptables-legacy' and 'iptables' commands respectively. The 'plain' mode is
+# targeted at RHEL, which ships with an nftables-based 'iptables' command.
+iptablesMode: "legacy"
+# -- Disables adding IPv6 rules on top of IPv4 rules
+disableIPv6: true
 # -- Kubernetes priorityClassName for the CNI plugin's Pods
 priorityClassName: ""
+# -- Specifies the number of old ReplicaSets to retain to allow rollback.
+revisionHistoryLimit: 10
 
 # -- Add a PSP resource and bind it to the linkerd-cni ServiceAccounts.
 # Note PSP has been deprecated since k8s v1.21
@@ -39,12 +50,23 @@ privileged: false
 # -|- Tolerations section, See the
 # [K8S documentation](https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/)
 # for more information
-#tolerations:
+tolerations:
+  # -- toleration properties
+  - operator: Exists
 
 # -|- NodeAffinity section, See the
 # [K8S documentation](https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#node-affinity)
 # for more information
 #nodeAffinity:
+
+# -|- Image section
+image:
+  # -- Docker image for the CNI plugin
+  name: "cr.l5d.io/linkerd/cni-plugin"
+  # -- Tag for the CNI container Docker image
+  version: "v1.6.0"
+  # -- Pull policy for the linkerd-cni container
+  pullPolicy: IfNotPresent
 
 #
 ## For Private docker registries, authentication is needed.
@@ -56,21 +78,61 @@ privileged: false
 #
 # The pull secrets are applied to the respective service accounts
 # which will further orchestrate the deployments.
-imagePullSecrets:
+imagePullSecrets: []
 
 # -- Add additional initContainers to the daemonset
 extraInitContainers: []
-# - name: wait-for-other-cni
-#   image: busybox:1.33
-#   command:
-#     - /bin/sh
-#     - -xc
-#     - |
-#       for i in $(seq 1 180); do
-#         test -f /host/etc/cni/net.d/10-aws.conflist && exit 0
-#         sleep 1
-#       done
-#       exit 1
-#   volumeMounts:
-#     - mountPath: /host/etc/cni/net.d
-#       name: cni-net-dir
+
+# The cni-repair-controller scans pods in each node to find those that have
+# been injected by linkerd, and whose linkerd-network-validator container has
+# failed. This is usually caused by a race between linkerd-cni and the CNI
+# plugin used in the cluster. This controller deletes those failed pods so they
+# can restart and rety re-acquiring a proper network config.
+repairController:
+  # -- Enables the repair-controller container
+  enabled: false
+
+  # -- Log level for the repair-controller container
+  # @default -- info
+  logLevel: info
+  # -- Log format (`plain` or `json`) for the repair-controller container
+  # @default -- plain
+  logFormat: plain
+
+  # -- Include a securityContext in the repair-controller container
+  enableSecurityContext: true
+
+  resources:
+    cpu:
+      # -- Maximum amount of CPU units that the repair-controller container can use
+      limit: ""
+      # -- Amount of CPU units that the repair-controller container requests
+      request: ""
+    memory:
+      # -- Maximum amount of memory that the repair-controller container can use
+      limit: ""
+      # -- Amount of memory that the repair-controller container requests
+      request: ""
+    ephemeral-storage:
+      # -- Maximum amount of ephemeral storage that the repair-controller container can use
+      limit: ""
+      # -- Amount of ephemeral storage that the repair-controller container requests
+      request: ""
+
+# -- Resource requests and limits for linkerd-cni daemonset container
+resources:
+  cpu:
+    # -- Maximum amount of CPU units that the cni container can use
+    limit: ""
+    # -- Amount of CPU units that the cni container requests
+    request: ""
+  memory:
+    # -- Maximum amount of memory that the cni container can use
+    limit: ""
+    # -- Amount of memory that the cni container requests
+    request: ""
+  ephemeral-storage:
+    # -- Maximum amount of ephemeral storage that the cni container can use
+    limit: ""
+    # -- Amount of ephemeral storage that the cni container requests
+    request: ""

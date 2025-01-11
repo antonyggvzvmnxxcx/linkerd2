@@ -2,7 +2,6 @@ package multiclustertest
 
 import (
 	"bytes"
-	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -10,12 +9,12 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
-	"html/template"
 	"math/big"
 	"os"
 	"testing"
 	"time"
 
+	mcHealthcheck "github.com/linkerd/linkerd2/multicluster/cmd"
 	"github.com/linkerd/linkerd2/pkg/healthcheck"
 	"github.com/linkerd/linkerd2/pkg/version"
 	"github.com/linkerd/linkerd2/testutil"
@@ -26,8 +25,9 @@ import (
 //////////////////////
 
 var (
-	TestHelper *testutil.TestHelper
-	contexts   map[string]string
+	TestHelper     *testutil.TestHelper
+	contexts       map[string]string
+	testDataDiffer testutil.TestDataDiffer
 )
 
 type (
@@ -63,8 +63,8 @@ func TestInstall(t *testing.T) {
 
 	// First, write CA to file
 	rootPath := fmt.Sprintf("%s/%s", tmpDir, "ca.crt")
-	// Write file with numberic mode 0444 -- ugo=r
-	if err = os.WriteFile(rootPath, certs.ca, 0444); err != nil {
+	// Write file with numberic mode 0400 -- u=r
+	if err = os.WriteFile(rootPath, certs.ca, 0400); err != nil {
 		testutil.AnnotatedFatal(t, "failed to create CA certificate", err)
 	}
 
@@ -72,11 +72,11 @@ func TestInstall(t *testing.T) {
 	issuerCertPath := fmt.Sprintf("%s/%s", tmpDir, "issuer.crt")
 	issuerKeyPath := fmt.Sprintf("%s/%s", tmpDir, "issuer.key")
 
-	if err = os.WriteFile(issuerCertPath, certs.issuerCert, 0444); err != nil {
+	if err = os.WriteFile(issuerCertPath, certs.issuerCert, 0400); err != nil {
 		testutil.AnnotatedFatal(t, "failed to create issuer certificate", err)
 	}
 
-	if err = os.WriteFile(issuerKeyPath, certs.issuerKey, 0444); err != nil {
+	if err = os.WriteFile(issuerKeyPath, certs.issuerKey, 0400); err != nil {
 		testutil.AnnotatedFatal(t, "failed to create issuer key", err)
 	}
 
@@ -113,6 +113,8 @@ func TestInstall(t *testing.T) {
 	cmd = []string{
 		"install",
 		"--controller-log-level", "debug",
+		"--set", "proxyInit.image.name=ghcr.io/linkerd/proxy-init",
+		"--set", fmt.Sprintf("proxyInit.image.version=%s", version.ProxyInitVersion),
 		"--set", fmt.Sprintf("proxy.image.version=%s", TestHelper.GetVersion()),
 		"--set", "heartbeatSchedule=1 2 3 4 5",
 		"--identity-trust-anchors-file", rootPath,
@@ -140,8 +142,16 @@ func TestInstall(t *testing.T) {
 }
 
 func TestInstallMulticluster(t *testing.T) {
-	for _, ctx := range contexts {
-		out, err := TestHelper.LinkerdRun("--context="+ctx, "multicluster", "install")
+	for k, ctx := range contexts {
+		var out string
+		var err error
+		// Source context should be installed without a gateway
+		if k == testutil.SourceContextKey {
+			out, err = TestHelper.LinkerdRun("--context="+ctx, "multicluster", "install", "--gateway=false")
+		} else {
+			out, err = TestHelper.LinkerdRun("--context="+ctx, "multicluster", "install")
+		}
+
 		if err != nil {
 			testutil.AnnotatedFatal(t, "'linkerd multicluster install' command failed", err)
 		}
@@ -153,10 +163,8 @@ func TestInstallMulticluster(t *testing.T) {
 		}
 	}
 
-	// Wait for gateways to come up
-	for _, ctx := range contexts {
-		TestHelper.WaitRolloutWithContext(t, testutil.MulticlusterDeployReplicas, ctx)
-	}
+	// Wait for gateways to come up in target cluster
+	TestHelper.WaitRolloutWithContext(t, testutil.MulticlusterDeployReplicas, contexts[testutil.TargetContextKey])
 
 	TestHelper.AddInstalledExtension("multicluster")
 }
@@ -166,39 +174,76 @@ func TestMulticlusterResourcesPostInstall(t *testing.T) {
 		{Namespace: "linkerd-multicluster", Name: "linkerd-gateway"},
 	}
 
+	TestHelper.SwitchContext(contexts[testutil.TargetContextKey])
 	testutil.TestResourcesPostInstall(TestHelper.GetMulticlusterNamespace(), multiclusterSvcs, testutil.MulticlusterDeployReplicas, TestHelper, t)
 }
 
 func TestLinkClusters(t *testing.T) {
-	linkName := "target"
-	// Get gateway IP from target cluster
+	// Get the control plane node IP, this is used to communicate with the
+	// API Server address.
+	// k3s runs an API server on the control plane node, the docker
+	// container IP suffices for a connection between containers to happen
+	// since they run on a shared network.
 	lbCmd := []string{
-		"get", "svc",
-		"-n", "kube-system", "traefik",
-		"-o", "go-template={{ (index .status.loadBalancer.ingress 0).ip }}",
+		"get", "node",
+		"-n", " -l=node-role.kubernetes.io/control-plane=true",
+		"-o", "go-template={{ (index (index .items 0).status.addresses 0).address }}",
 	}
-	lbIP, err := TestHelper.KubectlWithContext("", contexts[testutil.TargetContextKey], lbCmd...)
 
+	// Link target cluster to source
+	// * source cluster should support headless services
+	linkName := "target"
+	lbIP, err := TestHelper.KubectlWithContext("", contexts[testutil.TargetContextKey], lbCmd...)
 	if err != nil {
 		testutil.AnnotatedFatalf(t, "'kubectl get' command failed",
 			"'kubectl get' command failed\n%s", lbIP)
 	}
+
 	linkCmd := []string{
 		"--context=" + contexts[testutil.TargetContextKey],
-		"multicluster", "link",
-		"--log-level", "debug",
+		"--cluster-name", linkName,
 		"--api-server-address", fmt.Sprintf("https://%s:6443", lbIP),
-		"--cluster-name", linkName, "--set", "enableHeadlessServices=true",
+		"--set", "enableHeadlessServices=true",
+		"multicluster", "link",
+		"--log-format", "json",
+		"--log-level", "debug",
 	}
 
-	// Create link in target context
 	out, err := TestHelper.LinkerdRun(linkCmd...)
 	if err != nil {
 		testutil.AnnotatedFatalf(t, "'linkerd multicluster link' command failed", "'linkerd multicluster link' command failed: %s\n%s", out, err)
 	}
 
-	// Apply Link in source
 	out, err = TestHelper.KubectlApplyWithContext(out, contexts[testutil.SourceContextKey], "-f", "-")
+	if err != nil {
+		testutil.AnnotatedFatalf(t, "'kubectl apply' command failed",
+			"'kubectl apply' command failed\n%s", out)
+	}
+
+	// Link source cluster to target
+	// * source cluster does not have a gateway, so the link will reflect that
+	linkName = "source"
+	lbIP, err = TestHelper.KubectlWithContext("", contexts[testutil.SourceContextKey], lbCmd...)
+	if err != nil {
+		testutil.AnnotatedFatalf(t, "'kubectl get' command failed",
+			"'kubectl get' command failed\n%s", lbIP)
+	}
+
+	linkCmd = []string{
+		"--context=" + contexts[testutil.SourceContextKey],
+		"--cluster-name", linkName, "--gateway=false",
+		"--api-server-address", fmt.Sprintf("https://%s:6443", lbIP),
+		"multicluster", "link",
+		"--log-format", "json",
+		"--log-level", "debug",
+	}
+
+	out, err = TestHelper.LinkerdRun(linkCmd...)
+	if err != nil {
+		testutil.AnnotatedFatalf(t, "'linkerd multicluster link' command failed", "'linkerd multicluster link' command failed: %s\n%s", out, err)
+	}
+
+	out, err = TestHelper.KubectlApplyWithContext(out, contexts[testutil.TargetContextKey], "-f", "-")
 	if err != nil {
 		testutil.AnnotatedFatalf(t, "'kubectl apply' command failed",
 			"'kubectl apply' command failed\n%s", out)
@@ -206,86 +251,50 @@ func TestLinkClusters(t *testing.T) {
 
 }
 
-// TestInstallViz will install the viz extension, needed to verify whether the
-// gateway probe succeeded.
-// TODO (matei): can the dependency on viz be removed?
-func TestInstallViz(t *testing.T) {
-	for _, ctx := range contexts {
-		cmd := []string{
-			"--context=" + ctx,
-			"viz",
-			"install",
-			"--set", fmt.Sprintf("namespace=%s", TestHelper.GetVizNamespace()),
-		}
-
-		out, err := TestHelper.LinkerdRun(cmd...)
-		if err != nil {
-			testutil.AnnotatedFatal(t, "'linkerd viz install' command failed", err)
-		}
-
-		out, err = TestHelper.KubectlApplyWithContext(out, ctx, "-f", "-")
-		if err != nil {
-			testutil.AnnotatedFatalf(t, "'kubectl apply' command failed",
-				"'kubectl apply' command failed\n%s", out)
-		}
-
-	}
-
-	// Allow viz to be installed in parallel and then block until viz is ready.
-	for _, ctx := range contexts {
-		TestHelper.WaitRolloutWithContext(t, testutil.LinkerdVizDeployReplicas, ctx)
-	}
-}
-
 func TestCheckMulticluster(t *testing.T) {
-	golden := "check.multicluster.golden"
-	// Check resources after link were created successfully in source cluster
-	ctx := contexts[testutil.SourceContextKey]
-	checkCmd := []string{"--context=" + ctx, "multicluster", "check", "--wait=40s"}
+	// Run `linkerd check` for both clusters, expect multicluster checks to be
+	// run and pass successfully
+	for _, ctx := range contexts {
+		// First, switch context to make sure we check pods in the cluster we're
+		// supposed to be checking them in. This will rebuild the clientset
+		if err := TestHelper.SwitchContext(ctx); err != nil {
+			testutil.AnnotatedFatalf(t, "failed to rebuild helper clientset with new context", "failed to rebuild helper clientset with new context [%s]: %v", ctx, err)
+		}
 
-	// First, switch context to make sure we check pods in the cluster we're
-	// supposed to be checking them in. This will rebuild the clientset
-	if err := TestHelper.SwitchContext(ctx); err != nil {
-		testutil.AnnotatedFatalf(t, "failed to rebuild helper clientset with new context", "failed to rebuild helper clientset with new context [%s]: %v", ctx, err)
-	}
-	pods, err := TestHelper.KubernetesHelper.GetPods(context.Background(), TestHelper.GetMulticlusterNamespace(), nil)
-	if err != nil {
-		testutil.AnnotatedFatal(t, fmt.Sprintf("failed to retrieve pods: %s", err), err)
-	}
-
-	linkName := "target"
-	tpl := template.Must(template.ParseFiles("testdata" + "/" + golden))
-	vars := struct {
-		ProxyVersionErr string
-		HintURL         string
-		LinkName        string
-	}{
-		healthcheck.CheckProxyVersionsUpToDate(pods, version.Channels{}).Error(),
-		healthcheck.HintBaseURL(TestHelper.GetVersion()),
-		linkName,
-	}
-
-	var expected bytes.Buffer
-	if err := tpl.Execute(&expected, vars); err != nil {
-		testutil.AnnotatedFatal(t, fmt.Sprintf("failed to parse %s template: %s", golden, err), err)
-	}
-
-	timeout := 5 * time.Minute
-	err = TestHelper.RetryFor(timeout, func() error {
-		out, err := TestHelper.LinkerdRun(checkCmd...)
+		err := TestHelper.TestCheckWith([]healthcheck.CategoryID{mcHealthcheck.LinkerdMulticlusterExtensionCheck}, "--context", ctx)
 		if err != nil {
-			return fmt.Errorf("'linkerd multicluster check' command failed\n%w", err)
+			t.Fatalf("'linkerd check' command failed: %s", err)
 		}
-
-		if out != expected.String() {
-			return fmt.Errorf(
-				"Expected:\n%s\nActual:\n%s", expected.String(), out)
-		}
-		return nil
-	})
-	if err != nil {
-		testutil.AnnotatedFatal(t, fmt.Sprintf("'linkerd multicluster check' command timed-out (%s)", timeout), err)
 	}
+
+	// Check resources after link were created successfully in source cluster (e.g.
+	// secrets)
+	t.Run("Outputs resources that allow service-mirror controllers to connect to target cluster", func(t *testing.T) {
+		if err := TestHelper.SwitchContext(contexts[testutil.TargetContextKey]); err != nil {
+			testutil.AnnotatedFatalf(t,
+				"failed to rebuild helper clientset with new context",
+				"failed to rebuild helper clientset with new context [%s]: %v",
+				contexts[testutil.TargetContextKey], err)
+		}
+		name := "foo"
+		out, err := TestHelper.LinkerdRun("mc", "allow", "--service-account-name", name)
+		if err != nil {
+			testutil.AnnotatedFatalf(t,
+				"failed to execute 'mc allow' command",
+				"failed to execute 'mc allow' command %s\n%s",
+				err.Error(), out)
+		}
+		params := map[string]string{
+			"Version":     TestHelper.GetVersion(),
+			"AccountName": name,
+		}
+		if err = testDataDiffer.DiffTestYAMLTemplate("allow.golden", out, params); err != nil {
+			testutil.AnnotatedFatalf(t,
+				"received unexpected output",
+				"received unexpected output\n%s",
+				err.Error())
+		}
+	})
 }
 
 //////////////////////

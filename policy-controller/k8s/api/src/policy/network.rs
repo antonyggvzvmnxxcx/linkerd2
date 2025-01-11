@@ -1,12 +1,50 @@
-#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+use std::net::IpAddr;
+
+use ipnet::IpNet;
+
+#[derive(
+    Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "camelCase")]
 pub struct Network {
     pub cidr: Cidr,
     pub except: Option<Vec<Cidr>>,
 }
 
+// === impl Network ===
+
+impl Network {
+    #[inline]
+    pub fn intersect(&self, cidr: &Cidr) -> bool {
+        let cidr_is_exception = self.except.iter().flatten().any(|ex| ex.contains(cidr));
+        let intersect = cidr.contains(&self.cidr) || self.cidr.contains(cidr);
+
+        intersect && !cidr_is_exception
+    }
+
+    #[inline]
+    pub fn contains(&self, addr: IpAddr) -> bool {
+        let addr = Cidr::Addr(addr);
+        let addr_is_exception = self.except.iter().flatten().any(|ex| ex.contains(&addr));
+        if addr_is_exception {
+            return false;
+        }
+
+        self.cidr.contains(&addr)
+    }
+
+    /// Returns the size of this Network. The size is the
+    /// cidr size - the sum of the exception sizes. We assume
+    /// that exceptions do not overlap.
+    #[inline]
+    pub fn block_size(&self) -> usize {
+        let except_size: usize = self.except.iter().flatten().map(|c| c.block_size()).sum();
+        self.cidr.block_size() - except_size
+    }
+}
+
 #[derive(
-    Copy, Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize, schemars::JsonSchema,
+    Copy, Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize, schemars::JsonSchema,
 )]
 #[serde(untagged)]
 pub enum Cidr {
@@ -28,6 +66,26 @@ impl Cidr {
             (Self::Net(this), Self::Addr(other)) => this.contains(other),
             (Self::Addr(this), Self::Net(other)) => ipnet::IpNet::from(*this).contains(other),
             (Self::Addr(this), Self::Addr(other)) => this == other,
+        }
+    }
+
+    #[inline]
+    pub fn is_ipv6(&self) -> bool {
+        match self {
+            Self::Addr(addr) => addr.is_ipv6(),
+            Self::Net(IpNet::V4(_)) => false,
+            Self::Net(IpNet::V6(_)) => true,
+        }
+    }
+
+    /// Returns the size of this CIDR block.
+    ///
+    /// Returns `1` if this represents a single address.
+    #[inline]
+    pub fn block_size(&self) -> usize {
+        match self {
+            Cidr::Net(net) => net.hosts().count(),
+            Cidr::Addr(_) => 1,
         }
     }
 }

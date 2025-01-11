@@ -2,7 +2,7 @@ package k8s
 
 import (
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"os"
 
@@ -27,7 +27,7 @@ func GetContainerMetrics(
 
 	defer portForward.Stop()
 	if err = portForward.Init(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error running port-forward: %s", err)
+		fmt.Fprintf(os.Stderr, "Error running port-forward: %s\n", err)
 		return nil, err
 	}
 
@@ -45,5 +45,5 @@ func getResponse(url string) ([]byte, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	return ioutil.ReadAll(resp.Body)
+	return io.ReadAll(resp.Body)
 }

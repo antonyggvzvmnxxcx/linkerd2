@@ -1,22 +1,12 @@
 import { Plural, Trans } from '@lingui/macro';
 import { formatDistanceToNow, subSeconds } from 'date-fns';
-import { handlePageVisibility, withPageVisibility } from './util/PageVisibility.jsx';
-import BaseTable from './BaseTable.jsx';
-import CallToAction from './CallToAction.jsx';
 import Card from '@material-ui/core/Card';
 import CardContent from '@material-ui/core/CardContent';
-import CheckModal from './CheckModal.jsx';
-import ErrorBanner from './ErrorBanner.jsx';
 import Grid from '@material-ui/core/Grid';
-import MeshedStatusTable from './MeshedStatusTable.jsx';
-import Percentage from './util/Percentage.js';
 import PropTypes from 'prop-types';
 import React from 'react';
-import Spinner from './util/Spinner.jsx';
-import StatusTable from './StatusTable.jsx';
 import Typography from '@material-ui/core/Typography';
 import _compact from 'lodash/compact';
-import _countBy from 'lodash/countBy';
 import _filter from 'lodash/filter';
 import _get from 'lodash/get';
 import _groupBy from 'lodash/groupBy';
@@ -24,9 +14,18 @@ import _isEmpty from 'lodash/isEmpty';
 import _map from 'lodash/map';
 import _mapKeys from 'lodash/mapKeys';
 import _sumBy from 'lodash/sumBy';
+import { withStyles } from '@material-ui/core/styles';
 import { incompleteMeshMessage } from './util/CopyUtils.jsx';
 import { withContext } from './util/AppContext.jsx';
-import { withStyles } from '@material-ui/core/styles';
+import StatusTable from './StatusTable.jsx';
+import Spinner from './util/Spinner.jsx';
+import Percentage from './util/Percentage.js';
+import MeshedStatusTable from './MeshedStatusTable.jsx';
+import ErrorBanner from './ErrorBanner.jsx';
+import CheckModal from './CheckModal.jsx';
+import CallToAction from './CallToAction.jsx';
+import BaseTable from './BaseTable.jsx';
+import { handlePageVisibility, withPageVisibility } from './util/PageVisibility.jsx';
 
 const styles = {
   checkModalWrapper: {
@@ -309,10 +308,11 @@ class ServiceMesh extends React.Component {
     if (_isEmpty(nsStatuses)) {
       message = <Trans>noNamespacesDetectedMsg</Trans>;
     } else {
-      const meshedCount = _countBy(nsStatuses, pod => {
-        return pod.meshedPercent.get() > 0;
-      });
-      numUnadded = meshedCount.false || 0;
+      const unmeshedNamespaces = nsStatuses
+        .filter(pod => pod.meshedPercent.get() <= 0)
+        .filter(pod => pod.totalPods > 0)
+        .filter(pod => pod.namespace !== 'kube-system');
+      numUnadded = unmeshedNamespaces.length ?? 0;
       message = numUnadded === 0 ? <Trans>All namespaces have a {productName} install.</Trans> : (
         <Plural
           value={numUnadded}

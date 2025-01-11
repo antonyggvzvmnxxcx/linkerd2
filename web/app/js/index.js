@@ -5,29 +5,30 @@ import { BrowserRouter, Redirect, Route, Switch } from 'react-router-dom';
 import { DETECTORS, LocaleResolver, TRANSFORMERS } from 'locales-detector';
 import { MuiThemeProvider, createTheme } from '@material-ui/core/styles';
 
-import ApiHelpers from './components/util/ApiHelpers.jsx';
-import AppContext from './components/util/AppContext.jsx';
-import Community from './components/Community.jsx';
 import CssBaseline from '@material-ui/core/CssBaseline';
-import Extensions from './components/Extensions.jsx';
-import Gateway from './components/Gateway.jsx';
 import { I18nProvider } from '@lingui/react';
 import { i18n } from '@lingui/core';
 import { en, es } from 'make-plural/plurals';
-import Namespace from './components/Namespace.jsx';
-import Navigation from './components/Navigation.jsx';
-import NoMatch from './components/NoMatch.jsx';
 import { QueryParamProvider } from 'use-query-params';
 import React from 'react';
 import ReactDOM from 'react-dom';
+import _find from 'lodash/find';
+import _isEmpty from 'lodash/isEmpty';
+import { ReactRouter5Adapter } from 'use-query-params/adapters/react-router-5';
+import ApiHelpers from './components/util/ApiHelpers.jsx';
+import AppContext from './components/util/AppContext.jsx';
+import Community from './components/Community.jsx';
+import Extensions from './components/Extensions.jsx';
+import Gateway from './components/Gateway.jsx';
+import Namespace from './components/Namespace.jsx';
+import Navigation from './components/Navigation.jsx';
+import NoMatch from './components/NoMatch.jsx';
 import ResourceDetail from './components/ResourceDetail.jsx';
 import ResourceList from './components/ResourceList.jsx';
 import ServiceMesh from './components/ServiceMesh.jsx';
 import Tap from './components/Tap.jsx';
 import Top from './components/Top.jsx';
 import TopRoutes from './components/TopRoutes.jsx';
-import _find from 'lodash/find';
-import _isEmpty from 'lodash/isEmpty';
 import catalogEn from './locales/en/messages.js';
 import catalogEs from './locales/es/messages.js';
 import { dashboardTheme } from './components/util/theme.js';
@@ -121,13 +122,12 @@ const AppHTML = function() {
       <CssBaseline />
       <MuiThemeProvider theme={theme}>
         <BrowserRouter>
-          <QueryParamProvider ReactRouterRoute={Route}>
+          <QueryParamProvider adapter={ReactRouter5Adapter}>
             <Switch>
               <Redirect exact from={`${pathPrefix}/`} to={`${pathPrefix}/namespaces`} />
               <Redirect exact from={`${pathPrefix}/overview`} to={`${pathPrefix}/namespaces`} />
               <Redirect exact from={`${pathPrefix}/deployments`} to={`${pathPrefix}/namespaces/_all/deployments`} />
               <Redirect exact from={`${pathPrefix}/services`} to={`${pathPrefix}/namespaces/_all/services`} />
-              <Redirect exact from={`${pathPrefix}/trafficsplits`} to={`${pathPrefix}/namespaces/_all/trafficsplits`} />
               <Redirect exact from={`${pathPrefix}/daemonsets`} to={`${pathPrefix}/namespaces/_all/daemonsets`} />
               <Redirect exact from={`${pathPrefix}/statefulsets`} to={`${pathPrefix}/namespaces/_all/statefulsets`} />
               <Redirect exact from={`${pathPrefix}/jobs`} to={`${pathPrefix}/namespaces/_all/jobs`} />
@@ -162,12 +162,6 @@ const AppHTML = function() {
               <Route
                 path={`${pathPrefix}/namespaces/:namespace/statefulsets`}
                 render={props => <Navigation {...props} ChildComponent={ResourceList} resource="statefulset" />} />
-              <Route
-                path={`${pathPrefix}/namespaces/:namespace/trafficsplits/:trafficsplit`}
-                render={props => <Navigation {...props} ChildComponent={ResourceDetail} />} />
-              <Route
-                path={`${pathPrefix}/namespaces/:namespace/trafficsplits`}
-                render={props => <Navigation {...props} ChildComponent={ResourceList} resource="trafficsplit" />} />
               <Route
                 path={`${pathPrefix}/namespaces/:namespace/jobs/:job`}
                 render={props => <Navigation {...props} ChildComponent={ResourceDetail} />} />

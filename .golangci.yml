@@ -7,18 +7,15 @@
 
 run:
   deadline: 5m
-  skip-dirs:
+  exclude-dirs:
   - controller/gen
 
 linters:
   enable:
   - bodyclose
-  - deadcode
-  - depguard
+  #TODO - copyloopvar
   - errcheck
   - errorlint
-  - exportloopref
-  - goconst
   - gocritic
   - gosec
   - gosimple
@@ -28,13 +25,13 @@ linters:
   - nakedret
   - revive
   - staticcheck
-  - structcheck
+  - stylecheck
   - typecheck
   - unconvert
   - unparam
   - unused
-  - varcheck
   # TODO: enable more linters!
+  # - depguard
   # - dupl
   # - gochecknoglobals
   # - gochecknoinits
@@ -43,7 +40,24 @@ linters:
   # - lll
   # - maligned
   # - prealloc
-  # - stylecheck
+
+  disable: []
+
+linters-settings:
+  revive:
+    rules:
+    - name: package-comments
+      disabled: true
+  stylecheck:
+    checks: ["ST1019"]
+  errcheck:
+    exclude-functions:
+      - fmt.Fprint
+      - fmt.Fprintf
+      - fmt.Fprintln
+  gosec:
+    excludes:
+      - G115 # Potential integer overflow when converting between integer types
 
 issues:
   exclude-use-default: false
@@ -59,6 +73,12 @@ issues:
   - linters:
     - errcheck
     text: Error return value of `.*\.Close` is not checked
+
+  # Ignore error values when closing file or HTTP response bodies. These
+  # generally happen as cleanup and are part of defer statements.
+  - linters:
+    - gosec
+    text: Deferring unsafe method "Close" on type
 
   # Ignore error checks for CLI output.
   - linters:
@@ -76,6 +96,14 @@ issues:
   - linters:
     - gosec
     text: "G101: Potential hardcoded credentials"
+
+  # Temporarily disable this check until the next golang-ci upgrade (greater
+  # than v1.50.1) which upgrades gosec from v2.13.1 to v2.14.0. The fix is in
+  # this commit, that refers to G404 but it seems it also affects G402:
+  # https://github.com/securego/gosec/commit/dfde579243e1bfe0856ddafc5fc6aebb29c0edf6
+  - linters:
+    - gosec
+    text: "G402: TLS MinVersion too low"
 
   # Flag operations are fallible if the flag does not exist. We assume these
   # exist as they are generally flags we are deprecating or use only for
@@ -111,23 +139,10 @@ issues:
     - gocritic
     text: "ifElseChain: rewrite if-else to switch statement"
 
-  # Test files do not need to be linted by gosec since all OS operations are
-  # not dynamic.
-  - linters:
-    - gosec
-    path: .*test.*
-    text: "G204: Subprocess launched with .*"
-
-  # Test/fuzzing do not need to be checked for file handle cleanup.
+  # Test/fuzzing do not need to be tested for security issues.
   - linters:
     - gosec
     path: .*(test|fuzzer).*\.go
-    text: Deferring unsafe method \"Close\" on type \"\*os\.File\"
-
-  # Gateways API is being deprecated in 2.12 and will be removed in 2.13
-  - linters:
-    - staticcheck
-    text: "SA1019: .*.(GatewaysTable|GatewaysRequest|GatewaysResponse|Gateways) is deprecated: Do not use."
 
   # In tests/fuzzing we are usually mocking components or have a good idea
   # about the errors that we expect. For this reason, we ignore unchecked

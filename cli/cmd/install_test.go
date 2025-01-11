@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io/ioutil"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -22,18 +22,27 @@ const (
 )
 
 func TestRender(t *testing.T) {
-	defaultValues, err := testInstallOptions()
+	defaultValues, err := testInstallOptionsFakeCerts()
 	if err != nil {
 		t.Fatal(err)
 	}
-	addFakeTLSSecrets(defaultValues)
+
+	gidValues, err := testInstallOptionsFakeCerts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	gidValues.ControllerGID = 1234
+	gidValues.Proxy.GID = 4321
 
 	// A configuration that shows that all config setting strings are honored
 	// by `render()`.
+	var controllerGID int64 = 2103
+	var proxyGID int64 = 2102
 	metaValues := &charts.Values{
 		ControllerImage:         "ControllerImage",
 		LinkerdVersion:          "LinkerdVersion",
 		ControllerUID:           2103,
+		ControllerGID:           controllerGID,
 		EnableH2Upgrade:         true,
 		WebhookFailurePolicy:    "WebhookFailurePolicy",
 		HeartbeatSchedule:       "1 2 3 4 5",
@@ -47,9 +56,11 @@ func TestRender(t *testing.T) {
 		ControllerLogLevel:      "ControllerLogLevel",
 		ControllerLogFormat:     "ControllerLogFormat",
 		ProxyContainerName:      "ProxyContainerName",
+		RevisionHistoryLimit:    10,
 		CNIEnabled:              false,
 		IdentityTrustDomain:     defaultValues.IdentityTrustDomain,
 		IdentityTrustAnchorsPEM: defaultValues.IdentityTrustAnchorsPEM,
+		DestinationController:   defaultValues.DestinationController,
 		PodAnnotations:          map[string]string{},
 		PodLabels:               map[string]string{},
 		PriorityClassName:       "PriorityClassName",
@@ -59,8 +70,7 @@ func TestRender(t *testing.T) {
 				PullPolicy: "ImagePullPolicy",
 				Version:    "PolicyControllerVersion",
 			},
-			LogLevel:           "log-level",
-			DefaultAllowPolicy: "default-allow-policy",
+			LogLevel: "log-level",
 			Resources: &charts.Resources{
 				CPU: charts.Constraints{
 					Limit:   "cpu-limit",
@@ -71,6 +81,7 @@ func TestRender(t *testing.T) {
 					Request: "memory-request",
 				},
 			},
+			ProbeNetworks: []string{"1.0.0.0/0", "2.0.0.0/0"},
 		},
 		Proxy: &charts.Proxy{
 			Image: &charts.Image{
@@ -78,8 +89,9 @@ func TestRender(t *testing.T) {
 				PullPolicy: "ImagePullPolicy",
 				Version:    "ProxyVersion",
 			},
-			LogLevel:  "warn,linkerd=info",
-			LogFormat: "plain",
+			LogLevel:       "warn,linkerd=info",
+			LogFormat:      "plain",
+			LogHTTPHeaders: "off",
 			Resources: &charts.Resources{
 				CPU: charts.Constraints{
 					Limit:   "cpu-limit",
@@ -96,30 +108,42 @@ func TestRender(t *testing.T) {
 				Inbound:  4143,
 				Outbound: 4140,
 			},
-			UID:         2102,
-			OpaquePorts: "25,443,587,3306,5432,11211",
+			UID:                  2102,
+			GID:                  proxyGID,
+			OpaquePorts:          "25,443,587,3306,5432,11211",
+			Await:                true,
+			DefaultInboundPolicy: "default-allow-policy",
+			LivenessProbe: &charts.Probe{
+				InitialDelaySeconds: 10,
+				TimeoutSeconds:      1,
+			},
+			ReadinessProbe: &charts.Probe{
+				InitialDelaySeconds: 2,
+				TimeoutSeconds:      1,
+			},
 		},
 		ProxyInit: &charts.ProxyInit{
+			IptablesMode: "legacy",
 			Image: &charts.Image{
 				Name:       "ProxyInitImageName",
 				PullPolicy: "ImagePullPolicy",
 				Version:    "ProxyInitVersion",
 			},
 			IgnoreOutboundPorts: "443",
-			Resources: &charts.Resources{
-				CPU: charts.Constraints{
-					Limit:   "100m",
-					Request: "10m",
-				},
-				Memory: charts.Constraints{
-					Limit:   "50Mi",
-					Request: "10Mi",
-				},
-			},
 			XTMountPath: &charts.VolumeMountPath{
 				MountPath: "/run",
 				Name:      "linkerd-proxy-init-xtables-lock",
 			},
+			RunAsRoot:  false,
+			RunAsUser:  65534,
+			RunAsGroup: 65534,
+		},
+		NetworkValidator: &charts.NetworkValidator{
+			LogLevel:    "debug",
+			LogFormat:   "plain",
+			ConnectAddr: "1.1.1.1:20001",
+			ListenAddr:  "[::]:4140",
+			Timeout:     "10s",
 		},
 		Configs: charts.ConfigJSONs{
 			Global:  "GlobalConfig",
@@ -137,6 +161,7 @@ func TestRender(t *testing.T) {
 		ProxyInjector:      defaultValues.ProxyInjector,
 		ProfileValidator:   defaultValues.ProfileValidator,
 		PolicyValidator:    defaultValues.PolicyValidator,
+		Egress:             defaultValues.Egress,
 	}
 
 	haValues, err := testInstallOptionsHA(true)
@@ -228,6 +253,7 @@ func TestRender(t *testing.T) {
 		{defaultValues, "install_custom_domain.golden", values.Options{}},
 		{defaultValues, "install_values_file.golden", values.Options{ValueFiles: []string{filepath.Join("testdata", "install_config.yaml")}}},
 		{defaultValues, "install_default_token.golden", values.Options{Values: []string{"identity.serviceAccountTokenProjection=false"}}},
+		{gidValues, "install_gid_output.golden", values.Options{}},
 	}
 
 	for i, tc := range testCases {
@@ -238,9 +264,10 @@ func TestRender(t *testing.T) {
 				t.Fatalf("Failed to get values overrides: %v", err)
 			}
 			var buf bytes.Buffer
-			if err := renderControlPlane(&buf, tc.values, valuesOverrides); err != nil {
+			if err := renderControlPlane(&buf, tc.values, valuesOverrides, "yaml"); err != nil {
 				t.Fatalf("Failed to render templates: %v", err)
 			}
+
 			if err := testDataDiffer.DiffTestYAML(tc.goldenFileName, buf.String()); err != nil {
 				t.Error(err)
 			}
@@ -256,7 +283,7 @@ func TestIgnoreCluster(t *testing.T) {
 	addFakeTLSSecrets(defaultValues)
 
 	var buf bytes.Buffer
-	if err := installControlPlane(context.Background(), nil, &buf, defaultValues, nil, values.Options{}); err != nil {
+	if err := installControlPlane(context.Background(), nil, &buf, defaultValues, nil, values.Options{}, "yaml"); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -269,7 +296,7 @@ func TestRenderCRDs(t *testing.T) {
 	addFakeTLSSecrets(defaultValues)
 
 	var buf bytes.Buffer
-	if err := renderCRDs(&buf); err != nil {
+	if err := renderCRDs(&buf, values.Options{}, "yaml"); err != nil {
 		t.Fatalf("Failed to render templates: %v", err)
 	}
 	if err := testDataDiffer.DiffTestYAML("install_crds.golden", buf.String()); err != nil {
@@ -303,6 +330,15 @@ func TestValidateAndBuild_Errors(t *testing.T) {
 	})
 }
 
+func testInstallOptionsFakeCerts() (*charts.Values, error) {
+	values, err := testInstallOptions()
+	if err != nil {
+		return nil, err
+	}
+	addFakeTLSSecrets(values)
+	return values, nil
+}
+
 func testInstallOptions() (*charts.Values, error) {
 	return testInstallOptionsHA(false)
 }
@@ -313,7 +349,7 @@ func testInstallOptionsHA(ha bool) (*charts.Values, error) {
 		return nil, err
 	}
 
-	data, err := ioutil.ReadFile(filepath.Join("testdata", "valid-crt.pem"))
+	data, err := os.ReadFile(filepath.Join("testdata", "valid-crt.pem"))
 	if err != nil {
 		return nil, err
 	}
@@ -330,7 +366,7 @@ func testInstallOptionsHA(ha bool) (*charts.Values, error) {
 	}
 	values.Identity.Issuer.TLS.KeyPEM = key
 
-	data, err = ioutil.ReadFile(filepath.Join("testdata", "valid-trust-anchors.pem"))
+	data, err = os.ReadFile(filepath.Join("testdata", "valid-trust-anchors.pem"))
 	if err != nil {
 		return nil, err
 	}
@@ -370,15 +406,15 @@ func testInstallValues() (*charts.Values, error) {
 	values.PolicyController.Image.Version = installControlPlaneVersion
 	values.HeartbeatSchedule = fakeHeartbeatSchedule()
 
-	identityCert, err := ioutil.ReadFile(filepath.Join("testdata", "valid-crt.pem"))
+	identityCert, err := os.ReadFile(filepath.Join("testdata", "valid-crt.pem"))
 	if err != nil {
 		return nil, err
 	}
-	identityKey, err := ioutil.ReadFile(filepath.Join("testdata", "valid-key.pem"))
+	identityKey, err := os.ReadFile(filepath.Join("testdata", "valid-key.pem"))
 	if err != nil {
 		return nil, err
 	}
-	trustAnchorsPEM, err := ioutil.ReadFile(filepath.Join("testdata", "valid-trust-anchors.pem"))
+	trustAnchorsPEM, err := os.ReadFile(filepath.Join("testdata", "valid-trust-anchors.pem"))
 	if err != nil {
 		return nil, err
 	}
@@ -426,7 +462,7 @@ func TestValidate(t *testing.T) {
 		}
 
 		values.ControllerLogLevel = "super"
-		expected := "--controller-log-level must be one of: panic, fatal, error, warn, info, debug"
+		expected := "--controller-log-level must be one of: panic, fatal, error, warn, info, debug, trace"
 
 		err = validateValues(context.Background(), nil, values)
 		if err == nil {
@@ -486,6 +522,7 @@ func TestValidate(t *testing.T) {
 			expectedError string
 		}{
 			{"valid", ""},
+			{"valid-with-rsa-anchor", ""},
 			{"expired", "failed to validate issuer credentials: not valid anymore. Expired on 1990-01-01T01:01:11Z"},
 			{"not-valid-yet", "failed to validate issuer credentials: not valid before: 2100-01-01T01:00:51Z"},
 			{"wrong-algo", "failed to validate issuer credentials: must use P-256 curve for public key, instead P-521 was used"},
@@ -509,7 +546,7 @@ func TestValidate(t *testing.T) {
 			}
 			values.Identity.Issuer.TLS.KeyPEM = key
 
-			ca, err := ioutil.ReadFile(filepath.Join("testdata", tc.crtFilePrefix+"-trust-anchors.pem"))
+			ca, err := os.ReadFile(filepath.Join("testdata", tc.crtFilePrefix+"-trust-anchors.pem"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -525,7 +562,7 @@ func TestValidate(t *testing.T) {
 					t.Fatalf("Expected error string\"%s\", got \"%s\"", tc.expectedError, err)
 				}
 			} else if err != nil {
-				t.Fatalf("Expected no error bu got \"%s\"", err)
+				t.Fatalf("Expected no error but got \"%s\"", err)
 			}
 		}
 	})
@@ -569,6 +606,23 @@ func TestValidate(t *testing.T) {
 			} else if err != nil {
 				t.Fatalf("Expected no error but got \"%s\"", err)
 			}
+		}
+	})
+
+	t.Run("Rejects invalid default-inbound-policy", func(t *testing.T) {
+		values, err := testInstallOptions()
+		if err != nil {
+			t.Fatalf("Unexpected error: %v\n", err)
+		}
+		values.Proxy.DefaultInboundPolicy = "everybody"
+		expected := "--default-inbound-policy must be one of: all-authenticated, all-unauthenticated, cluster-authenticated, cluster-unauthenticated, deny, audit (got everybody)"
+
+		err = validateValues(context.Background(), nil, values)
+		if err == nil {
+			t.Fatal("Expected error, got nothing")
+		}
+		if err.Error() != expected {
+			t.Fatalf("Expected error string \"%s\", got \"%s\"", expected, err)
 		}
 	})
 }

@@ -1,6 +1,12 @@
 # -- Namespace of the Linkerd core control-plane install
 linkerdNamespace: linkerd
 
+# -- Additional labels to add to all pods
+podLabels: {}
+
+# -- Labels to apply to all resources
+commonLabels: {}
+
 # -- Default nodeSelector section, See the
 # [K8S documentation](https://kubernetes.io/docs/concepts/configuration/assign-pod-node/#nodeselector) for more information
 nodeSelector: &default_node_selector
@@ -16,21 +22,47 @@ imagePullSecrets: []
 # for more information
 tolerations: &default_tolerations
 
+# -- Enables Pod Anti Affinity logic to balance the placement of replicas
+# across hosts and zones for High Availability.
+# Enable this only when you have multiple replicas of components.
+enablePodAntiAffinity: false
+
+# -- NodeAffinity section, See the
+# [K8S documentation](https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#node-affinity)
+# for more information
+#nodeAffinity:
+
+# -- Creates a Job that adds necessary metadata to the extension's namespace
+# during install; disable if lack of privileges require doing this manually
+createNamespaceMetadataJob: true
+
 # -- Create Roles and RoleBindings to associate this extension's
 # ServiceAccounts to the control plane PSP resource. This requires that
 # `enabledPSP` is set to true on the control plane install. Note PSP has been
 # deprecated since k8s v1.21
 enablePSP: false
 
+# -- Default UID for all the jaeger components
+defaultUID: 2103
+
+# -- Default GID for all the jaeger components
+defaultGID: 2103
+
+# -- Specifies the number of old ReplicaSets to retain to allow rollback.
+revisionHistoryLimit: 10
+
 # -- Kubernetes DNS Domain name to use
 clusterDomain: cluster.local
 collector:
   # -- Set to false to exclude collector installation
   enabled: true
+  # -- Number of replicas of the collector component
+  replicas: 1
   image:
-    name: otel/opentelemetry-collector
-    version: 0.43.0
-    pullPolicy: Always
+    name: otel/opentelemetry-collector-contrib
+    version: 0.83.0
+    pullPolicy: ""
+  command: /otelcol-contrib
 
   resources:
     cpu:
@@ -57,26 +89,86 @@ collector:
   # for more information
   tolerations: *default_tolerations
 
+  # -- UID for the collector resource
+  UID:
+
+  # -- GID for the collector resource
+  GID:
+
   # -- OpenTelemetry Collector config, See the
   # [Configuration docs](https://opentelemetry.io/docs/collector/configuration/)
   # for more information
   # @default -- see `value.yaml` for actual configuration
-  config: |
+  config:
     receivers:
+      opencensus:
       otlp:
         protocols:
           grpc:
-          http:
-      opencensus:
-      zipkin:
-      jaeger:
-        protocols:
-          grpc:
-          thrift_http:
-          thrift_compact:
-          thrift_binary:
     processors:
       batch:
+      resource:
+        attributes:
+          - key: k8s.pod.name
+            from_attribute: host.name
+            action: insert
+          - key: k8s.namespace.name
+            from_attribute: linkerd.io/workload-ns
+            action: insert
+      k8sattributes:
+        auth_type: serviceAccount
+        pod_association:
+        - sources:
+          # - from: resource_attribute
+          #   name: k8s.pod.ip
+          - from: resource_attribute
+            name: k8s.pod.name
+          - from: resource_attribute
+            name: k8s.namespace.name
+        extract:
+          metadata:
+            - k8s.pod.name
+            - k8s.pod.uid
+            - k8s.deployment.name
+            - k8s.node.name
+            - k8s.namespace.name
+            - k8s.pod.start_time
+            - k8s.replicaset.name
+            - k8s.replicaset.uid
+            - k8s.daemonset.name
+            - k8s.daemonset.uid
+            - k8s.job.name
+            - k8s.job.uid
+            - k8s.cronjob.name
+            - k8s.statefulset.name
+            - k8s.statefulset.uid
+            - container.image.name
+            - container.image.tag
+            - container.id
+            - k8s.container.name
+            - container.image.name
+            - container.image.tag
+            - container.id
+
+          labels:
+          - tag_name: kube_app_name
+            key: app.kubernetes.io/name
+            from: pod
+          - tag_name: kube_app_instance
+            key: app.kubernetes.io/instance
+            from: pod
+          - tag_name: kube_app_version
+            key: app.kubernetes.io/version
+            from: pod
+          - tag_name: kube_app_component
+            key: app.kubernetes.io/component
+            from: pod
+          - tag_name: kube_app_part_of
+            key: app.kubernetes.io/part-of
+            from: pod
+          - tag_name: kube_app_managed_by
+            key: app.kubernetes.io/managed-by
+            from: pod
     extensions:
       health_check:
     exporters:
@@ -88,9 +180,12 @@ collector:
       extensions: [health_check]
       pipelines:
         traces:
-          receivers: [otlp,opencensus,zipkin,jaeger]
-          processors: [batch]
+          receivers: [opencensus, otlp]
+          processors: [resource, k8sattributes, batch]
           exporters: [jaeger]
+
+  # -- Collector Deployment env
+  env: []
 
 jaeger:
   # -- Set to false to exclude all-in-one Jaeger installation
@@ -98,7 +193,7 @@ jaeger:
   image:
     name: jaegertracing/all-in-one
     version: 1.31
-    pullPolicy: Always
+    pullPolicy: ""
 
   # -- CLI arguments for Jaeger, See [Jaeger AIO Memory CLI reference](https://www.jaegertracing.io/docs/1.24/cli/#jaeger-all-in-one-memory)
   args:
@@ -129,9 +224,37 @@ jaeger:
   # for more information
   tolerations: *default_tolerations
 
+  # -- UID for the jaeger resource
+  UID:
+
+  # -- GID for the jaeger resource
+  GID:
+
 linkerdVersion: &linkerd_version linkerdVersionValue
 
+namespaceMetadata:
+  image:
+    # -- Docker registry for the namespace-metadata instance
+    registry: cr.l5d.io/linkerd
+    # -- Docker image name for the namespace-metadata instance
+    name: extension-init
+    # -- Docker image tag for the namespace-metadata instance
+    tag: v0.1.2
+    # -- Pull policy for the namespace-metadata instance
+    # @default -- imagePullPolicy
+    pullPolicy: ""
+
+  # -- NodeSelector section, See the
+  # [K8S documentation](https://kubernetes.io/docs/concepts/configuration/assign-pod-node/#nodeselector) for more information
+  nodeSelector: *default_node_selector
+  # -- Tolerations section, See the
+  # [K8S documentation](https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/)
+  # for more information
+  tolerations: *default_tolerations
+
 webhook:
+  # -- Number of replicas of the jaeger-injector component
+  replicas: 1
   # -- Do not create a secret resource for the webhook.
   # If this is set to `true`, the value `webhook.caBundle` must be set
   # or the ca bundle must injected with cert-manager ca injector using
@@ -168,8 +291,13 @@ webhook:
   injectCaFromSecret: ""
 
   # -- collector service address for the proxies to send trace data.
-  # Points by default to the the linkerd-jaeger collector
+  # Points by default to the linkerd-jaeger collector
   collectorSvcAddr: collector.linkerd-jaeger:55678
+  # -- protocol proxies should use to send trace data.
+  # Can be `opencensus` (default) or `opentelemetry`
+  collectorTraceProtocol: opencensus
+  # -- name of the service proxies should use for exported traces
+  collectorTraceSvcName: linkerd-proxy
   # -- service account associated with the collector instance
   collectorSvcAccount: collector
 
@@ -177,14 +305,16 @@ webhook:
   image:
     name: cr.l5d.io/linkerd/jaeger-webhook
     version: *linkerd_version
-    pullPolicy: IfNotPresent
+    pullPolicy: ""
   logLevel: info
 
+  # -- Namespace selector used by admission webhook.
   namespaceSelector:
-    #matchExpressions:
-    #- key: runlevel
-    #  operator: NotIn
-    #  values: ["0","1"]
+    matchExpressions:
+    - key: kubernetes.io/metadata.name
+      operator: NotIn
+      values:
+      - kube-system
   objectSelector:
     #matchLabels:
     #  foo: bar
@@ -208,3 +338,9 @@ webhook:
   # [K8S documentation](https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/)
   # for more information
   tolerations: *default_tolerations
+
+  # -- UID for the webhook resource
+  UID:
+
+  # -- GID for the webhook resource
+  GID:

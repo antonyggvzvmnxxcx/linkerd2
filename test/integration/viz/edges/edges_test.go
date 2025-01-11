@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"regexp"
 	"strings"
@@ -50,7 +49,7 @@ func TestEdges(t *testing.T) {
 		"-ojson",
 	}
 	r := regexp.MustCompile(b.String())
-	err := TestHelper.RetryFor(timeout, func() error {
+	err := testutil.RetryFor(timeout, func() error {
 		out, err := TestHelper.LinkerdRun(cmd...)
 		if err != nil {
 			t.Fatal(err)
@@ -108,7 +107,7 @@ func TestDirectEdges(t *testing.T) {
 		}
 		ip = strings.Trim(ip, "\"") // strip quotes
 
-		b, err := ioutil.ReadFile("testdata/slow-cooker.yaml")
+		b, err := os.ReadFile("testdata/slow-cooker.yaml")
 		if err != nil {
 			testutil.AnnotatedError(t, "error reading file slow-cooker.yaml", err)
 		}
@@ -142,7 +141,7 @@ func TestDirectEdges(t *testing.T) {
 		// check edges
 		timeout := 50 * time.Second
 		testDataPath := "testdata"
-		err = TestHelper.RetryFor(timeout, func() error {
+		err = testutil.RetryFor(timeout, func() error {
 			out, err = TestHelper.LinkerdRun("-n", testNamespace, "-o", "json", "viz", "edges", "deploy")
 			if err != nil {
 				return err

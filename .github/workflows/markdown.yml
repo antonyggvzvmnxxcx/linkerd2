@@ -6,18 +6,18 @@ permissions:
 on:
   pull_request:
     paths:
-      - '**/*.md'
       - .github/workflows/markdown.yml
+      - "**/*.md"
 
 jobs:
   markdownlint:
     timeout-minutes: 5
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@2541b1294d2704b0964813337f33b291d3f8596b
-      - uses: DavidAnson/markdownlint-cli2-action@744f913a124058ee903768d3adb92a4847e5d132
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: DavidAnson/markdownlint-cli2-action@a23dae216ce3fee4db69da41fed90d2a4af801cf
         with:
-            globs: |
-              **/*.md
-              !**/node_modules/**
-              !target/**
+          globs: |
+            **/*.md
+            !**/node_modules/**
+            !target/**

@@ -3,9 +3,10 @@ package cmd
 import (
 	"bytes"
 	"context"
-	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/golang/protobuf/ptypes/duration"
@@ -140,16 +141,18 @@ func busyTest(t *testing.T, output string) {
 	}
 
 	var goldenFilePath string
-	switch options.output {
-	case wideOutput:
+	switch {
+	case options.output == wideOutput:
 		goldenFilePath = "testdata/tap_busy_output_wide.golden"
-	case jsonOutput:
+	case options.output == jsonOutput:
 		goldenFilePath = "testdata/tap_busy_output_json.golden"
+	case strings.HasPrefix(options.output, jsonPathOutput):
+		goldenFilePath = "testdata/tap_busy_output_jsonpath.golden"
 	default:
 		goldenFilePath = "testdata/tap_busy_output.golden"
 	}
 
-	goldenFileBytes, err := ioutil.ReadFile(goldenFilePath)
+	goldenFileBytes, err := os.ReadFile(goldenFilePath)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -173,6 +176,10 @@ func TestRequestTapByResourceFromAPI(t *testing.T) {
 
 	t.Run("Should render JSON busy response if everything went well", func(t *testing.T) {
 		busyTest(t, "json")
+	})
+
+	t.Run("Should render jsonpath busy response if everything went well", func(t *testing.T) {
+		busyTest(t, "jsonpath={.source}")
 	})
 
 	t.Run("Should render empty response if no events returned", func(t *testing.T) {
@@ -207,7 +214,7 @@ func TestRequestTapByResourceFromAPI(t *testing.T) {
 			t.Fatalf("Unexpected error: %v", err)
 		}
 
-		goldenFileBytes, err := ioutil.ReadFile("testdata/tap_empty_output.golden")
+		goldenFileBytes, err := os.ReadFile("testdata/tap_empty_output.golden")
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
@@ -264,8 +271,8 @@ func TestEventToString(t *testing.T) {
 			httpEvent.GetResponseEnd().Id = streamID
 		}
 
-		srcIP, _ := addr.ParsePublicIPV4("1.2.3.4")
-		destIP, _ := addr.ParsePublicIPV4("2.3.4.5")
+		srcIP, _ := addr.ParsePublicIP("1.2.3.4")
+		destIP, _ := addr.ParsePublicIP("2.3.4.5")
 		return &tapPb.TapEvent{
 			ProxyDirection: tapPb.TapEvent_OUTBOUND,
 			Source: &netPb.TcpAddress{
@@ -301,7 +308,7 @@ func TestEventToString(t *testing.T) {
 		})
 
 		expectedOutput := "req id=7:8 proxy=out src=1.2.3.4:5555 dst=2.3.4.5:6666 tls= :method=POST :authority=hello.default:7777 :path=/hello.v1.HelloService/Hello"
-		output := renderTapEvent(event, "")
+		output := renderTapEvent(event)
 		if output != expectedOutput {
 			t.Fatalf("Expecting command output to be [%s], got [%s]", expectedOutput, output)
 		}
@@ -311,14 +318,14 @@ func TestEventToString(t *testing.T) {
 		event := toTapEvent(&tapPb.TapEvent_Http{
 			Event: &tapPb.TapEvent_Http_ResponseInit_{
 				ResponseInit: &tapPb.TapEvent_Http_ResponseInit{
-					SinceRequestInit: &duration.Duration{Nanos: 999000},
+					SinceRequestInit: &duration.Duration{Seconds: 9, Nanos: 999000},
 					HttpStatus:       http.StatusOK,
 				},
 			},
 		})
 
-		expectedOutput := "rsp id=7:8 proxy=out src=1.2.3.4:5555 dst=2.3.4.5:6666 tls= :status=200 latency=999µs"
-		output := renderTapEvent(event, "")
+		expectedOutput := "rsp id=7:8 proxy=out src=1.2.3.4:5555 dst=2.3.4.5:6666 tls= :status=200 latency=9000999µs"
+		output := renderTapEvent(event)
 		if output != expectedOutput {
 			t.Fatalf("Expecting command output to be [%s], got [%s]", expectedOutput, output)
 		}
@@ -339,7 +346,7 @@ func TestEventToString(t *testing.T) {
 		})
 
 		expectedOutput := "end id=7:8 proxy=out src=1.2.3.4:5555 dst=2.3.4.5:6666 tls= grpc-status=OK duration=888µs response-length=111B"
-		output := renderTapEvent(event, "")
+		output := renderTapEvent(event)
 		if output != expectedOutput {
 			t.Fatalf("Expecting command output to be [%s], got [%s]", expectedOutput, output)
 		}
@@ -360,7 +367,7 @@ func TestEventToString(t *testing.T) {
 		})
 
 		expectedOutput := "end id=7:8 proxy=out src=1.2.3.4:5555 dst=2.3.4.5:6666 tls= reset-error=123 duration=888µs response-length=111B"
-		output := renderTapEvent(event, "")
+		output := renderTapEvent(event)
 		if output != expectedOutput {
 			t.Fatalf("Expecting command output to be [%s], got [%s]", expectedOutput, output)
 		}
@@ -379,7 +386,7 @@ func TestEventToString(t *testing.T) {
 		})
 
 		expectedOutput := "end id=7:8 proxy=out src=1.2.3.4:5555 dst=2.3.4.5:6666 tls= duration=888µs response-length=111B"
-		output := renderTapEvent(event, "")
+		output := renderTapEvent(event)
 		if output != expectedOutput {
 			t.Fatalf("Expecting command output to be [%s], got [%s]", expectedOutput, output)
 		}
@@ -397,7 +404,7 @@ func TestEventToString(t *testing.T) {
 		})
 
 		expectedOutput := "end id=7:8 proxy=out src=1.2.3.4:5555 dst=2.3.4.5:6666 tls= duration=888µs response-length=111B"
-		output := renderTapEvent(event, "")
+		output := renderTapEvent(event)
 		if output != expectedOutput {
 			t.Fatalf("Expecting command output to be [%s], got [%s]", expectedOutput, output)
 		}
@@ -407,7 +414,7 @@ func TestEventToString(t *testing.T) {
 		event := toTapEvent(&tapPb.TapEvent_Http{})
 
 		expectedOutput := "unknown proxy=out src=1.2.3.4:5555 dst=2.3.4.5:6666 tls="
-		output := renderTapEvent(event, "")
+		output := renderTapEvent(event)
 		if output != expectedOutput {
 			t.Fatalf("Expecting command output to be [%s], got [%s]", expectedOutput, output)
 		}

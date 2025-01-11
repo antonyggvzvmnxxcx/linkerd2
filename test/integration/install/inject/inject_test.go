@@ -162,7 +162,7 @@ func TestInjectAutoParams(t *testing.T) {
 		}
 
 		var pod *v1.Pod
-		err = TestHelper.RetryFor(30*time.Second, func() error {
+		err = testutil.RetryFor(30*time.Second, func() error {
 			pods, err := TestHelper.GetPodsForDeployment(ctx, ns, deployName)
 			if err != nil {
 				return fmt.Errorf("failed to get pods for namespace %s", ns)
@@ -183,11 +183,11 @@ func TestInjectAutoParams(t *testing.T) {
 		})
 
 		if err != nil {
-			testutil.AnnotatedFatalf(t, "failed to find autoinjected pod: ", err.Error())
+			testutil.AnnotatedFatal(t, "failed to find autoinjected pod: ", err.Error())
 		}
 
 		if err := injectionValidator.ValidatePod(&pod.Spec); err != nil {
-			testutil.AnnotatedFatalf(t, "failed to validate auto injection", err.Error())
+			testutil.AnnotatedFatal(t, "failed to validate auto injection", err.Error())
 		}
 	})
 }
@@ -386,6 +386,9 @@ func TestInjectAutoPod(t *testing.T) {
 
 	truthy := true
 	falsy := false
+	initUser := int64(65534)
+	initGroup := int64(65534)
+	seccompProfile := &v1.SeccompProfile{Type: v1.SeccompProfileTypeRuntimeDefault}
 	reg := "cr.l5d.io/linkerd"
 	if override := os.Getenv(flags.EnvOverrideDockerRegistry); override != "" {
 		reg = override
@@ -394,22 +397,13 @@ func TestInjectAutoPod(t *testing.T) {
 		Name:  k8s.InitContainerName,
 		Image: reg + "/proxy-init:" + version.ProxyInitVersion,
 		Args: []string{
+			"--ipv6=false",
 			"--incoming-proxy-port", "4143",
 			"--outgoing-proxy-port", "4140",
 			"--proxy-uid", "2102",
 			// 1234,5678 were added at install time in `install_test.go`'s helmOverridesEdge()
 			"--inbound-ports-to-ignore", "4190,4191,1234,5678",
 			"--outbound-ports-to-ignore", "4567,4568",
-		},
-		Resources: v1.ResourceRequirements{
-			Limits: v1.ResourceList{
-				v1.ResourceName("cpu"):    resource.MustParse("100m"),
-				v1.ResourceName("memory"): resource.MustParse("50Mi"),
-			},
-			Requests: v1.ResourceList{
-				v1.ResourceName("cpu"):    resource.MustParse("10m"),
-				v1.ResourceName("memory"): resource.MustParse("10Mi"),
-			},
 		},
 		VolumeMounts: []v1.VolumeMount{
 			{
@@ -432,6 +426,9 @@ func TestInjectAutoPod(t *testing.T) {
 			RunAsNonRoot:             &truthy,
 			AllowPrivilegeEscalation: &falsy,
 			ReadOnlyRootFilesystem:   &truthy,
+			RunAsUser:                &initUser,
+			RunAsGroup:               &initGroup,
+			SeccompProfile:           seccompProfile,
 		},
 		TerminationMessagePolicy: v1.TerminationMessagePolicy("FallbackToLogsOnError"),
 	}

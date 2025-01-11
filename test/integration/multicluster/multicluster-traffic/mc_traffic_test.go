@@ -1,52 +1,71 @@
 package multiclustertraffic
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"html/template"
 	"os"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
 
+	mcHealthcheck "github.com/linkerd/linkerd2/multicluster/cmd"
 	"github.com/linkerd/linkerd2/pkg/healthcheck"
 	"github.com/linkerd/linkerd2/pkg/k8s"
-	"github.com/linkerd/linkerd2/pkg/version"
 	"github.com/linkerd/linkerd2/testutil"
+	"github.com/linkerd/linkerd2/testutil/prommatch"
 )
 
 var (
 	TestHelper *testutil.TestHelper
 	targetCtx  string
+	sourceCtx  string
 	contexts   map[string]string
 )
 
 var (
-	tcpConnRE = regexp.MustCompile(
-		`tcp_open_total\{direction="outbound",peer="dst",target_addr="[0-9\.]+:[0-9]+",target_ip="[0-9\.]+",target_port="[0-9]+",tls="true",server_id="default\.linkerd-multicluster-statefulset\.serviceaccount\.identity\.linkerd\.cluster\.local",dst_control_plane_ns="linkerd",dst_namespace="linkerd-multicluster-statefulset",dst_pod="nginx-statefulset-0",dst_serviceaccount="default",dst_statefulset="nginx-statefulset"\} [1-9]\d*`,
+	nginxTargetLabels = prommatch.Labels{
+		"direction":            prommatch.Equals("outbound"),
+		"tls":                  prommatch.Equals("true"),
+		"server_id":            prommatch.Equals("default.linkerd-multicluster-statefulset.serviceaccount.identity.linkerd.cluster.local"),
+		"dst_control_plane_ns": prommatch.Equals("linkerd"),
+		"dst_namespace":        prommatch.Equals("linkerd-multicluster-statefulset"),
+		"dst_pod":              prommatch.Equals("nginx-statefulset-0"),
+		"dst_serviceaccount":   prommatch.Equals("default"),
+		"dst_statefulset":      prommatch.Equals("nginx-statefulset"),
+	}
+
+	tcpConnMatcher = prommatch.NewMatcher("tcp_open_total",
+		prommatch.Labels{
+			"peer": prommatch.Equals("dst"),
+		},
+		prommatch.TargetAddrLabels(),
+		nginxTargetLabels,
+		prommatch.HasPositiveValue(),
 	)
-	httpReqRE = regexp.MustCompile(
-		`request_total\{direction="outbound",target_addr="[0-9\.]+:[0-9]+",target_ip="[0-9\.]+",target_port="[0-9]+",tls="true",server_id="default\.linkerd-multicluster-statefulset\.serviceaccount\.identity\.linkerd\.cluster\.local",dst_control_plane_ns="linkerd",dst_namespace="linkerd-multicluster-statefulset",dst_pod="nginx-statefulset-0",dst_serviceaccount="default",dst_statefulset="nginx-statefulset"\} [1-9]\d*`,
+	httpReqMatcher = prommatch.NewMatcher("request_total",
+		prommatch.TargetAddrLabels(),
+		nginxTargetLabels,
+		prommatch.HasPositiveValue(),
 	)
 )
 
 func TestMain(m *testing.M) {
 	TestHelper = testutil.NewTestHelper()
-	// Before starting, get source context
+	// Before starting, initialize contexts
 	contexts = TestHelper.GetMulticlusterContexts()
+	sourceCtx = contexts[testutil.SourceContextKey]
 	targetCtx = contexts[testutil.TargetContextKey]
-	// Then, re-build clientset with context of target cluster instead of kube
-	// context inferred from environment.
-	if err := TestHelper.SwitchContext(targetCtx); err != nil {
-		out := fmt.Sprintf("Error running test: failed to switch Kubernetes client to context [%s]: %s\n", targetCtx, err)
+	// Then, re-build clientset with source cluster context instead of context
+	// inferred from environment.
+	if err := TestHelper.SwitchContext(sourceCtx); err != nil {
+		out := fmt.Sprintf("Error running test: failed to switch Kubernetes client to context [%s]: %s\n", sourceCtx, err)
 		os.Stderr.Write([]byte(out))
 		os.Exit(1)
 	}
-	// Block until viz deploy is running successfully in target cluster.
-	TestHelper.WaitUntilDeployReady(testutil.LinkerdVizDeployReplicas)
+	// Block until gateway & service mirror deploys are running successfully in
+	// source cluster.
+	TestHelper.WaitUntilDeployReady(testutil.MulticlusterSourceReplicas)
 	os.Exit(m.Run())
 }
 
@@ -76,7 +95,7 @@ func TestGateways(t *testing.T) {
 	})
 
 	timeout := time.Minute
-	err := TestHelper.RetryFor(timeout, func() error {
+	err := testutil.RetryFor(timeout, func() error {
 		out, err := TestHelper.LinkerdRun("--context="+contexts[testutil.SourceContextKey], "multicluster", "gateways")
 		if err != nil {
 			return err
@@ -106,89 +125,68 @@ func TestGateways(t *testing.T) {
 	}
 }
 
-// TestCheckAfterRepairEndpoints calls `linkerd mc check` again after 1 minute,
+// TestCheckGatewayAfterRepairEndpoints calls `linkerd mc check` again after 1 minute,
 // so that the RepairEndpoints event has already been processed, making sure
 // that resyncing didn't break things.
-// CheckGateway will make use of nginx-gateway-deploy to see whether check
-// result returns number of mirror services.
 func TestCheckGatewayAfterRepairEndpoints(t *testing.T) {
 	// Re-build the clientset with the source context
 	if err := TestHelper.SwitchContext(contexts[testutil.SourceContextKey]); err != nil {
-		testutil.AnnotatedFatalf(t, "failed to rebuild helper clientset with new context", "failed to rebuild helper clientset with new context [%s]: %v", contexts[testutil.SourceContextKey], err)
+		testutil.AnnotatedFatalf(t,
+			"failed to rebuild helper clientset with new context",
+			"failed to rebuild helper clientset with new context [%s]: %v",
+			contexts[testutil.SourceContextKey], err)
 	}
 	time.Sleep(time.Minute + 5*time.Second)
-	cmd := []string{"--context=" + contexts[testutil.SourceContextKey], "multicluster", "check", "--wait=10s"}
-	timeout := 20 * time.Second
-	err := TestHelper.RetryFor(timeout, func() error {
-		out, err := TestHelper.LinkerdRun(cmd...)
-		if err != nil {
-			return fmt.Errorf("'linkerd multicluster check' command failed\n%s", out)
-		}
-
-		pods, err := TestHelper.KubernetesHelper.GetPods(context.Background(), "linkerd-multicluster", nil)
-		if err != nil {
-			testutil.AnnotatedFatal(t, fmt.Sprintf("failed to retrieve pods: %s", err), err)
-		}
-
-		tpl := template.Must(template.ParseFiles("testdata/check-gateway.multicluster.golden"))
-		versionErr := healthcheck.CheckProxyVersionsUpToDate(pods, version.Channels{})
-		versionErrMsg := ""
-		if versionErr != nil {
-			versionErrMsg = versionErr.Error()
-		}
-		vars := struct {
-			ProxyVersionErr string
-			HintURL         string
-			LinkName        string
-		}{
-			versionErrMsg,
-			healthcheck.HintBaseURL(TestHelper.GetVersion()),
-			"target", // name of linked cluster, not its context
-		}
-
-		var expected bytes.Buffer
-		if err := tpl.Execute(&expected, vars); err != nil {
-			testutil.AnnotatedFatal(t, fmt.Sprintf("failed to parse check.multicluster.golden template: %s", err), err)
-		}
-
-		if out != expected.String() {
-			return fmt.Errorf(
-				"Expected:\n%s\nActual:\n%s", expected.String(), out)
-		}
-		return nil
-	})
+	err := TestHelper.TestCheckWith([]healthcheck.CategoryID{mcHealthcheck.LinkerdMulticlusterExtensionCheck}, "--context", contexts[testutil.SourceContextKey])
 	if err != nil {
-		testutil.AnnotatedFatal(t, fmt.Sprintf("'linkerd multicluster check' command timed-out (%s)", timeout), err)
+		t.Fatalf("'linkerd check' command failed: %s", err)
 	}
 }
 
 // TestTargetTraffic inspects the target cluster's web-svc pod to see if the
 // source cluster's vote-bot has been able to hit it with requests. If it has
-// successfully issued requests, then we'll see log messages indicating that the
-// web-svc can't reach the voting-svc (because it's not running).
+// successfully issued requests, then we'll see log messages.
 //
 // TODO it may be clearer to invoke `linkerd diagnostics proxy-metrics` to check whether we see
 // connections from the gateway pod to the web-svc?
 func TestTargetTraffic(t *testing.T) {
 	if err := TestHelper.SwitchContext(contexts[testutil.TargetContextKey]); err != nil {
-		testutil.AnnotatedFatalf(t, "failed to rebuild helper clientset with new context", "failed to rebuild helper clientset with new context [%s]: %v", contexts[testutil.TargetContextKey], err)
+		testutil.AnnotatedFatalf(t,
+			"failed to rebuild helper clientset with new context",
+			"failed to rebuild helper clientset with new context [%s]: %v",
+			contexts[testutil.TargetContextKey], err)
 	}
 
 	ctx := context.Background()
 	// Create emojivoto in target cluster, to be deleted at the end of the test.
-	TestHelper.WithDataPlaneNamespace(ctx, "emojivoto", map[string]string{}, t, func(t *testing.T, ns string) {
+	annotations := map[string]string{
+		// "config.linkerd.io/proxy-log-level": "linkerd=debug,info",
+	}
+	TestHelper.WithDataPlaneNamespace(ctx, "emojivoto", annotations, t, func(t *testing.T, ns string) {
 		t.Run("Deploy resources in source and target clusters", func(t *testing.T) {
 			// Deploy vote-bot client in source-cluster
-			o, err := TestHelper.KubectlApplyWithContext("", contexts[testutil.SourceContextKey], "-f", "testdata/vote-bot.yml")
+			o, err := TestHelper.KubectlWithContext("", contexts[testutil.SourceContextKey], "create", "ns", ns)
+			if err != nil {
+				testutil.AnnotatedFatalf(t, "failed to create ns", "failed to create ns: %s\n%s", err, o)
+			}
+			o, err = TestHelper.KubectlApplyWithContext("", contexts[testutil.SourceContextKey], "--namespace", ns, "-f", "testdata/vote-bot.yml")
 			if err != nil {
 				testutil.AnnotatedFatalf(t, "failed to install vote-bot", "failed to install vote-bot: %s\n%s", err, o)
 			}
 
-			out, err := TestHelper.KubectlApplyWithContext("", contexts[testutil.TargetContextKey], "-f", "testdata/emojivoto-no-bot.yml")
+			out, err := TestHelper.KubectlApplyWithContext("", contexts[testutil.TargetContextKey], "--namespace", ns, "-f", "testdata/emojivoto-no-bot.yml")
 			if err != nil {
 				testutil.AnnotatedFatalf(t, "failed to install emojivoto", "failed to install emojivoto: %s\n%s", err, out)
 			}
 
+			timeout := time.Minute
+			err = testutil.RetryFor(timeout, func() error {
+				out, err = TestHelper.KubectlWithContext("", contexts[testutil.TargetContextKey], "--namespace", ns, "label", "service/web-svc", "mirror.linkerd.io/exported=true")
+				return err
+			})
+			if err != nil {
+				testutil.AnnotatedFatalf(t, "failed to label web-svc", "%s\n%s", err, out)
+			}
 		})
 
 		t.Run("Wait until target workloads are ready", func(t *testing.T) {
@@ -206,7 +204,7 @@ func TestTargetTraffic(t *testing.T) {
 		})
 
 		timeout := time.Minute
-		err := TestHelper.RetryFor(timeout, func() error {
+		err := testutil.RetryFor(timeout, func() error {
 			out, err := TestHelper.KubectlWithContext("",
 				targetCtx,
 				"--namespace", ns,
@@ -287,43 +285,21 @@ func TestMulticlusterStatefulSetTargetTraffic(t *testing.T) {
 		t.Run("expect open outbound TCP connection from gateway to nginx", func(t *testing.T) {
 			// Use a short time window so that slow-cooker can warm-up and send
 			// requests.
-			err := TestHelper.RetryFor(1*time.Minute, func() error {
+			err := testutil.RetryFor(1*time.Minute, func() error {
 				// Check gateway metrics
 				metrics, err := TestHelper.LinkerdRun(dgCmd...)
 				if err != nil {
 					return fmt.Errorf("failed to get metrics for gateway deployment: %w", err)
 				}
 
-				// If no match, it means there are no open tcp conns from gateway to
-				// nginx pod.
-				if !tcpConnRE.MatchString(metrics) {
-					return fmt.Errorf("failed to find expected TCP connection open outbound metric from gateway to nginx")
+				s := prommatch.Suite{}.
+					MustContain("TCP connection from gateway to nginx", tcpConnMatcher).
+					MustContain("HTTP requests from gateway to nginx", httpReqMatcher)
+
+				if err := s.CheckString(metrics); err != nil {
+					return fmt.Errorf("invalid metrics for gateway deployment: %w", err)
 				}
 
-				return nil
-			})
-
-			if err != nil {
-				testutil.AnnotatedFatalf(t, "unexpected error", "unexpected error: %v", err)
-			}
-
-		})
-
-		t.Run("expect non-empty HTTP request metric from gateway to nginx", func(t *testing.T) {
-			// Use a short time window so that slow-cooker can warm-up and send
-			// requests.
-			err := TestHelper.RetryFor(30*time.Second, func() error {
-				// Check gateway metrics
-				metrics, err := TestHelper.LinkerdRun(dgCmd...)
-				if err != nil {
-					return fmt.Errorf("failed to get metrics for gateway deployment: %w", err)
-				}
-
-				// If no match, it means there are no outbound HTTP requests from
-				// gateway to nginx pod.
-				if !httpReqRE.MatchString(metrics) {
-					return fmt.Errorf("failed to find expected outbound HTTP request metric from gateway to nginx\nexpected: %s, got: %s", httpReqRE, metrics)
-				}
 				return nil
 			})
 

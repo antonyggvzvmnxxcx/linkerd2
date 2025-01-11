@@ -56,7 +56,7 @@ func TestSmoke(t *testing.T) {
 				"'kubectl apply' command failed\n%s", out)
 		}
 
-		// Wait for pods to in smoke-test dpeloyment to come up
+		// Wait for pods to in smoke-test deployment to come up
 		for _, deploy := range []string{"smoke-test-terminus", "smoke-test-gateway"} {
 			if err := TestHelper.CheckPods(ctx, ns, deploy, 1); err != nil {
 				//nolint:errorlint
@@ -75,7 +75,7 @@ func TestSmoke(t *testing.T) {
 		// Use a short time window for check tests to get rid of transient
 		// errors
 		timeout := 5 * time.Minute
-		err = TestHelper.RetryFor(timeout, func() error {
+		err = testutil.RetryFor(timeout, func() error {
 			out, err := TestHelper.LinkerdRun(cmd...)
 			if err != nil {
 				return fmt.Errorf("'linkerd check' command failed\n%w\n%s", err, out)

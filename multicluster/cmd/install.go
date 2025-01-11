@@ -14,14 +14,13 @@ import (
 	multicluster "github.com/linkerd/linkerd2/multicluster/values"
 	"github.com/linkerd/linkerd2/pkg/charts"
 	partials "github.com/linkerd/linkerd2/pkg/charts/static"
+	pkgcmd "github.com/linkerd/linkerd2/pkg/cmd"
 	"github.com/linkerd/linkerd2/pkg/flags"
 	"github.com/linkerd/linkerd2/pkg/healthcheck"
-	api "github.com/linkerd/linkerd2/pkg/public"
 	"github.com/linkerd/linkerd2/pkg/version"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"helm.sh/helm/v3/pkg/chart/loader"
-	chartloader "helm.sh/helm/v3/pkg/chart/loader"
 	"helm.sh/helm/v3/pkg/chartutil"
 	valuespkg "helm.sh/helm/v3/pkg/cli/values"
 	"helm.sh/helm/v3/pkg/engine"
@@ -36,12 +35,27 @@ type (
 	}
 )
 
+var TemplatesMulticluster = []string{
+	chartutil.ChartfileName,
+	chartutil.ValuesfileName,
+	"templates/namespace.yaml",
+	"templates/gateway.yaml",
+	"templates/gateway-policy.yaml",
+	"templates/psp.yaml",
+	"templates/remote-access-service-mirror-rbac.yaml",
+	"templates/link-crd.yaml",
+	"templates/service-mirror-policy.yaml",
+	"templates/local-service-mirror.yaml",
+}
+
 func newMulticlusterInstallCommand() *cobra.Command {
 	options, err := newMulticlusterInstallOptionsWithDefault()
 	var ha bool
 	var wait time.Duration
 	var valuesOptions valuespkg.Options
 	var ignoreCluster bool
+	var cniEnabled bool
+	var output string
 
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -58,10 +72,10 @@ func newMulticlusterInstallCommand() *cobra.Command {
 The installation can be configured by using the --set, --values, --set-string and --set-file flags.
 A full list of configurable values can be found at https://github.com/linkerd/linkerd2/blob/main/multicluster/charts/linkerd-multicluster/README.md
   `,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			if !ignoreCluster {
 				// Wait for the core control-plane to be up and running
-				api.CheckPublicAPIClientOrRetryOrExit(healthcheck.Options{
+				hc := healthcheck.NewWithCoreChecks(&healthcheck.Options{
 					ControlPlaneNamespace: controlPlaneNamespace,
 					KubeConfig:            kubeconfigPath,
 					KubeContext:           kubeContext,
@@ -70,8 +84,10 @@ A full list of configurable values can be found at https://github.com/linkerd/li
 					APIAddr:               apiAddr,
 					RetryDeadline:         time.Now().Add(wait),
 				})
+				hc.RunWithExitOnError()
+				cniEnabled = hc.CNIEnabled
 			}
-			return install(cmd.Context(), stdout, options, valuesOptions, ha, ignoreCluster)
+			return install(cmd.Context(), stdout, options, valuesOptions, ha, ignoreCluster, cniEnabled, output)
 		},
 	}
 
@@ -86,6 +102,7 @@ A full list of configurable values can be found at https://github.com/linkerd/li
 	cmd.Flags().DurationVar(&wait, "wait", 300*time.Second, "Wait for core control-plane components to be available")
 	cmd.Flags().BoolVar(&ignoreCluster, "ignore-cluster", false,
 		"Ignore the current Kubernetes cluster when checking for existing cluster configuration (default false)")
+	cmd.PersistentFlags().StringVarP(&output, "output", "o", "yaml", "Output format. One of: json|yaml")
 
 	// Hide developer focused flags in release builds.
 	release, err := version.IsReleaseChannel(version.Version)
@@ -101,7 +118,7 @@ A full list of configurable values can be found at https://github.com/linkerd/li
 	return cmd
 }
 
-func install(ctx context.Context, w io.Writer, options *multiclusterInstallOptions, valuesOptions valuespkg.Options, ha, ignoreCluster bool) error {
+func install(ctx context.Context, w io.Writer, options *multiclusterInstallOptions, valuesOptions valuespkg.Options, ha, ignoreCluster, cniEnabled bool, format string) error {
 	values, err := buildMulticlusterInstallValues(ctx, options, ignoreCluster)
 	if err != nil {
 		return err
@@ -120,21 +137,17 @@ func install(ctx context.Context, w io.Writer, options *multiclusterInstallOptio
 		}
 	}
 
-	return render(w, values, valuesOverrides)
+	if cniEnabled {
+		valuesOverrides["cniEnabled"] = true
+	}
+
+	return render(w, values, valuesOverrides, format)
 }
 
-func render(w io.Writer, values *multicluster.Values, valuesOverrides map[string]interface{}) error {
-	files := []*chartloader.BufferedFile{
-		{Name: chartutil.ChartfileName},
-		{Name: chartutil.ValuesfileName},
-		{Name: "templates/namespace.yaml"},
-		{Name: "templates/gateway.yaml"},
-		{Name: "templates/proxy-admin-policy.yaml"},
-		{Name: "templates/gateway-policy.yaml"},
-		{Name: "templates/psp.yaml"},
-		{Name: "templates/remote-access-service-mirror-rbac.yaml"},
-		{Name: "templates/link-crd.yaml"},
-		{Name: "templates/service-mirror-policy.yaml"},
+func render(w io.Writer, values *multicluster.Values, valuesOverrides map[string]interface{}, format string) error {
+	var files []*loader.BufferedFile
+	for _, template := range TemplatesMulticluster {
+		files = append(files, &loader.BufferedFile{Name: template})
 	}
 
 	var partialFiles []*loader.BufferedFile
@@ -198,10 +211,8 @@ func render(w io.Writer, values *multicluster.Values, valuesOverrides map[string
 			return err
 		}
 	}
-	w.Write(buf.Bytes())
-	w.Write([]byte("---\n"))
 
-	return nil
+	return pkgcmd.RenderYAMLAs(&buf, w, format)
 }
 
 func newMulticlusterInstallOptionsWithDefault() (*multiclusterInstallOptions, error) {
@@ -222,6 +233,11 @@ func buildMulticlusterInstallValues(ctx context.Context, opts *multiclusterInsta
 		return nil, err
 	}
 
+	if reg := os.Getenv(flags.EnvOverrideDockerRegistry); reg != "" {
+		defaults.LocalServiceMirror.Image.Name = pkgcmd.RegistryOverride(defaults.LocalServiceMirror.Image.Name, reg)
+	}
+
+	defaults.LocalServiceMirror.Image.Version = version.Version
 	defaults.Gateway.Enabled = opts.gateway.Enabled
 	defaults.Gateway.Port = opts.gateway.Port
 	defaults.Gateway.Probe.Seconds = opts.gateway.Probe.Seconds

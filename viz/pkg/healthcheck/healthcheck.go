@@ -14,6 +14,7 @@ import (
 	"github.com/linkerd/linkerd2/viz/metrics-api/client"
 	pb "github.com/linkerd/linkerd2/viz/metrics-api/gen/viz"
 	"github.com/linkerd/linkerd2/viz/pkg/labels"
+	corev1 "k8s.io/api/core/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	apiregistrationv1client "k8s.io/kube-aggregator/pkg/client/clientset_generated/clientset/typed/apiregistration/v1"
@@ -38,12 +39,18 @@ const (
 	linkerdTapAPIServiceName = "v1alpha1.tap.linkerd.io"
 )
 
+type VizOptions struct {
+	*healthcheck.Options
+	VizNamespaceOverride string
+}
+
 // HealthChecker wraps Linkerd's main healthchecker, adding extra fields for Viz
 type HealthChecker struct {
 	*healthcheck.HealthChecker
 	vizAPIClient          pb.ApiClient
 	vizNamespace          string
 	externalPrometheusURL string
+	vizNamespaceOverride  string
 }
 
 // NewHealthChecker returns an initialized HealthChecker for Viz
@@ -51,14 +58,28 @@ type HealthChecker struct {
 // are to be ran together with this instance
 // The returned instance does not contain any of the viz Categories and
 // to be explicitly added by using hc.AppendCategories
-func NewHealthChecker(parentCheckIDs []healthcheck.CategoryID, options *healthcheck.Options) *HealthChecker {
-	parentHC := healthcheck.NewHealthChecker(parentCheckIDs, options)
-	return &HealthChecker{HealthChecker: parentHC}
+func NewHealthChecker(parentCheckIDs []healthcheck.CategoryID, options *VizOptions) *HealthChecker {
+	parentHC := healthcheck.NewHealthChecker(parentCheckIDs, options.Options)
+	return &HealthChecker{
+		HealthChecker:        parentHC,
+		vizNamespaceOverride: options.VizNamespaceOverride,
+	}
 }
 
 // VizAPIClient returns a fully configured Viz API client
 func (hc *HealthChecker) VizAPIClient() pb.ApiClient {
 	return hc.vizAPIClient
+}
+
+// ExternalPrometheusURL returns URL of the external prometheus if one is
+// configured. Otherwise, it returns an empty string.
+func (hc *HealthChecker) ExternalPrometheusURL() string {
+	return hc.externalPrometheusURL
+}
+
+// VizNamespace returns the namespace where the viz extension is installed.
+func (hc *HealthChecker) VizNamespace() string {
+	return hc.vizNamespace
 }
 
 // RunChecks implements the healthcheck.Runner interface
@@ -68,33 +89,67 @@ func (hc *HealthChecker) RunChecks(observer healthcheck.CheckObserver) (bool, bo
 
 // VizCategory returns a healthcheck.Category containing checkers
 // to verify the health of viz components
-func (hc *HealthChecker) VizCategory() *healthcheck.Category {
+// fullCheck parameter will decide to run a full or a smaller set of healthchecks.
+func (hc *HealthChecker) VizCategory(fullCheck bool) *healthcheck.Category {
+	vizSelector := fmt.Sprintf("%s=%s", k8s.LinkerdExtensionLabel, VizExtensionName)
 
-	return healthcheck.NewCategory(LinkerdVizExtensionCheck, []healthcheck.Checker{
+	checks := []healthcheck.Checker{
 		*healthcheck.NewChecker("linkerd-viz Namespace exists").
 			WithHintAnchor("l5d-viz-ns-exists").
 			Fatal().
 			WithCheck(func(ctx context.Context) error {
-				vizNs, err := hc.KubeAPIClient().GetNamespaceWithExtensionLabel(ctx, "viz")
+				if hc.vizNamespaceOverride == "" {
+					vizNs, err := hc.KubeAPIClient().GetNamespaceWithExtensionLabel(ctx, "viz")
+					if err != nil {
+						return err
+					}
+
+					hc.vizNamespace = vizNs.Name
+					hc.externalPrometheusURL = vizNs.Annotations[labels.VizExternalPrometheus]
+					return nil
+				}
+
+				vizNs, err := hc.KubeAPIClient().GetNamespace(ctx, hc.vizNamespaceOverride)
 				if err != nil {
 					return err
+				}
+
+				if vizNs.Labels[k8s.LinkerdExtensionLabel] != "viz" {
+					return errors.New("This is not a linkerd-viz namespace")
 				}
 
 				hc.vizNamespace = vizNs.Name
 				hc.externalPrometheusURL = vizNs.Annotations[labels.VizExternalPrometheus]
 				return nil
+
 			}),
+		*healthcheck.NewChecker("can initialize the client").
+			WithHintAnchor("l5d-viz-existence-client").
+			Fatal().
+			WithRetryDeadline(hc.RetryDeadline).
+			WithCheck(func(ctx context.Context) (err error) {
+				if hc.APIAddr != "" {
+					hc.vizAPIClient, err = client.NewInternalClient(hc.APIAddr)
+				} else {
+					hc.vizAPIClient, err = client.NewExternalClient(ctx, hc.vizNamespace, hc.KubeAPIClient())
+				}
+				return
+			})}
+
+	if !fullCheck {
+		return healthcheck.NewCategory(LinkerdVizExtensionCheck, checks, true)
+	}
+
+	checks = append(checks,
 		*healthcheck.NewChecker("linkerd-viz ClusterRoles exist").
 			WithHintAnchor("l5d-viz-cr-exists").
 			Fatal().
-			Warning().
 			WithCheck(func(ctx context.Context) error {
 				return healthcheck.CheckClusterRoles(ctx, hc.KubeAPIClient(), true, []string{fmt.Sprintf("linkerd-%s-tap", hc.vizNamespace), fmt.Sprintf("linkerd-%s-metrics-api", hc.vizNamespace), fmt.Sprintf("linkerd-%s-tap-admin", hc.vizNamespace), "linkerd-tap-injector"}, "")
 			}),
 		*healthcheck.NewChecker("linkerd-viz ClusterRoleBindings exist").
 			WithHintAnchor("l5d-viz-crb-exists").
 			Fatal().
-			Warning().
 			WithCheck(func(ctx context.Context) error {
 				return healthcheck.CheckClusterRoleBindings(ctx, hc.KubeAPIClient(), true, []string{fmt.Sprintf("linkerd-%s-tap", hc.vizNamespace), fmt.Sprintf("linkerd-%s-metrics-api", hc.vizNamespace), fmt.Sprintf("linkerd-%s-tap-auth-delegator", hc.vizNamespace), "linkerd-tap-injector"}, "")
 			}),
@@ -153,18 +208,20 @@ func (hc *HealthChecker) VizCategory() *healthcheck.Category {
 			WithRetryDeadline(hc.RetryDeadline).
 			SurfaceErrorOnRetry().
 			WithCheck(func(ctx context.Context) error {
-				pods, err := hc.KubeAPIClient().GetPodsByNamespace(ctx, hc.vizNamespace)
+				podList, err := hc.KubeAPIClient().CoreV1().Pods(hc.vizNamespace).List(ctx, metav1.ListOptions{
+					LabelSelector: vizSelector,
+				})
 				if err != nil {
 					return err
 				}
 
 				// Check for relevant pods to be present
-				err = healthcheck.CheckForPods(pods, []string{"web", "tap", "metrics-api", "tap-injector"})
+				err = healthcheck.CheckForPods(podList.Items, []string{"web", "tap", "metrics-api", "tap-injector"})
 				if err != nil {
 					return err
 				}
 
-				return healthcheck.CheckPodsRunning(pods, hc.vizNamespace)
+				return healthcheck.CheckPodsRunning(podList.Items, hc.vizNamespace)
 			}),
 		*healthcheck.NewChecker("viz extension proxies are healthy").
 			WithHintAnchor("l5d-viz-proxy-healthy").
@@ -235,19 +292,14 @@ func (hc *HealthChecker) VizCategory() *healthcheck.Category {
 				}
 
 				// Check for relevant pods to be present
-				pods, err := hc.KubeAPIClient().GetPodsByNamespace(ctx, hc.vizNamespace)
+				podList, err := hc.KubeAPIClient().CoreV1().Pods(hc.vizNamespace).List(ctx, metav1.ListOptions{
+					LabelSelector: vizSelector,
+				})
 				if err != nil {
 					return err
 				}
 
-				return healthcheck.CheckForPods(pods, []string{"prometheus"})
-			}),
-		*healthcheck.NewChecker("can initialize the client").
-			WithHintAnchor("l5d-viz-existence-client").
-			Fatal().
-			WithCheck(func(ctx context.Context) (err error) {
-				hc.vizAPIClient, err = client.NewExternalClient(ctx, hc.vizNamespace, hc.KubeAPIClient())
-				return
+				return healthcheck.CheckForPods(podList.Items, []string{"prometheus"})
 			}),
 		*healthcheck.NewChecker("viz extension self-check").
 			WithHintAnchor("l5d-viz-metrics-api").
@@ -279,7 +331,9 @@ func (hc *HealthChecker) VizCategory() *healthcheck.Category {
 				errsStr := strings.Join(errs, "\n    ")
 				return errors.New(errsStr)
 			}),
-	}, true)
+	)
+
+	return healthcheck.NewCategory(LinkerdVizExtensionCheck, checks, true)
 }
 
 // VizDataPlaneCategory returns a healthcheck.Category containing checkers
@@ -296,6 +350,12 @@ func (hc *HealthChecker) VizDataPlaneCategory() *healthcheck.Category {
 					return nil
 				}
 				return hc.CheckNamespace(ctx, hc.DataPlaneNamespace, true)
+			}),
+		*healthcheck.NewChecker("prometheus is authorized to scrape data plane pods").
+			WithHintAnchor("l5d-viz-data-plane-prom-authz").
+			Warning().
+			WithCheck(func(ctx context.Context) error {
+				return hc.checkPromAuthorized(ctx)
 			}),
 		*healthcheck.NewChecker("data plane proxy metrics are present in Prometheus").
 			WithHintAnchor("l5d-data-plane-prom").
@@ -354,7 +414,7 @@ func validateDataPlanePodReporting(pods []*pb.Pod) error {
 	}
 
 	if errMsg != "" {
-		return fmt.Errorf(errMsg)
+		return errors.New(errMsg)
 	}
 
 	return nil
@@ -376,4 +436,92 @@ func fetchTapCaBundle(ctx context.Context, kubeAPI *k8s.KubernetesAPI) ([]*x509.
 		return nil, err
 	}
 	return caBundle, nil
+}
+
+func (hc *HealthChecker) checkPromAuthorized(ctx context.Context) error {
+	api := hc.KubeAPIClient()
+	nses, err := hc.getDataPlaneNamespaces(ctx, api)
+	if err != nil {
+		return err
+	}
+
+	unauthorizedPods := []string{}
+	for _, ns := range nses {
+		// first, let's see if this namespace has an `allow-scrapes` policy. if
+		// it does, skip checking its pods --- prometheus will be able to scrape
+		// them even if they are default-deny.
+		_, err := api.L5dCrdClient.PolicyV1alpha1().AuthorizationPolicies(ns.GetName()).Get(ctx, "prometheus-scrape", metav1.GetOptions{})
+		if kerrors.IsNotFound(err) {
+			// no prometheus-scrape policy exists in this namespace
+		} else if err != nil {
+			// something went wrong while talking to the kube API
+			return fmt.Errorf("could not get AuthorizationPolicies in the %s namespace: %w", ns.GetName(), err)
+		} else {
+			// allow-scrapes policy exists in this namespace, don't check the
+			// pods.
+			continue
+		}
+
+		pods, err := hc.KubeAPIClient().GetPodsByNamespace(ctx, ns.GetName())
+		if err != nil {
+			return fmt.Errorf("could not list pods in the %s namespace: %w", ns.GetName(), err)
+		}
+
+		var nsPrefix string
+		if ns.GetName() == hc.DataPlaneNamespace {
+			// if we're only checking one namespace, don't bother appending the
+			// namespace name to the pod's name in the error output
+			nsPrefix = ""
+		} else {
+			// otherwise, include the namespace name as well as the pod's
+			// name, since we are checking all namespaces.
+			nsPrefix = ns.GetName() + "/"
+		}
+
+		for _, pod := range pods {
+			// rather than checking the value of the pod's
+			// `config.linkerd.io/default-inbound-policy` annotation, check the
+			// proxy container's actual env variable. if the cluster-wide
+			// default inbound policy is `deny`, there won't be an override
+			// annotation, but the proxy-injector will have set the env variable
+			// directly.
+			containers := append(pod.Spec.InitContainers, pod.Spec.Containers...)
+			for _, c := range containers {
+				if c.Name == k8s.ProxyContainerName {
+					for _, env := range c.Env {
+						if env.Name == "LINKERD2_PROXY_INBOUND_DEFAULT_POLICY" && env.Value == "deny" {
+							unauthorizedPods = append(unauthorizedPods, fmt.Sprintf("\t* %s%s", nsPrefix, pod.Name))
+							break
+						}
+					}
+					break
+				}
+			}
+		}
+	}
+
+	if len(unauthorizedPods) > 0 {
+		podList := strings.Join(unauthorizedPods, "\n")
+		return fmt.Errorf("prometheus may not be authorized to scrape the following pods:\n%s\n"+
+			"    consider running `linkerd viz allow-scrapes` to authorize prometheus scrapes",
+			podList)
+	}
+
+	return nil
+}
+
+func (hc *HealthChecker) getDataPlaneNamespaces(ctx context.Context, api *k8s.KubernetesAPI) ([]corev1.Namespace, error) {
+	if hc.DataPlaneNamespace != "" {
+		ns, err := api.GetNamespace(ctx, hc.DataPlaneNamespace)
+		if err != nil {
+			return nil, err
+		}
+		return []corev1.Namespace{*ns}, nil
+	}
+
+	nses, err := api.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, err
+	}
+	return nses.Items, nil
 }
