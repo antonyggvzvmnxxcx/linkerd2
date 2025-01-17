@@ -3,10 +3,12 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
-	"sync/atomic"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/linkerd/linkerd2/cli/table"
@@ -21,6 +23,7 @@ import (
 type (
 	gatewaysOptions struct {
 		clusterName string
+		output      string
 		wait        time.Duration
 	}
 
@@ -31,10 +34,10 @@ type (
 	}
 
 	gatewayStatus struct {
-		clusterName      string
-		alive            bool
-		numberOfServices int
-		latency          uint64
+		ClusterName      string `json:"clusterName"`
+		Alive            bool   `json:"alive"`
+		NumberOfServices int    `json:"numberOfServices"`
+		Latency          uint64 `json:"latency"`
 	}
 )
 
@@ -75,15 +78,34 @@ func newGatewaysCommand() *cobra.Command {
 				os.Exit(1)
 			}
 
+			leases, err := k8sAPI.CoordinationV1().Leases(multiclusterNs.Name).List(cmd.Context(), metav1.ListOptions{})
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "failed to list pods in namespace %s: %s", multiclusterNs.Name, err)
+				os.Exit(1)
+			}
+			// Build a simple lookup table to retrieve Lease object claimants.
+			// Metrics should only be pulled from claimants as they are the ones
+			// running probes.
+			leaders := make(map[string]struct{})
+			for _, lease := range leases.Items {
+				// If the Lease is not used by the service-mirror, or if it does
+				// not have a claimant, then ignore it
+				if !strings.Contains(lease.Name, "service-mirror-write") || lease.Spec.HolderIdentity == nil {
+					continue
+				}
+
+				leaders[*lease.Spec.HolderIdentity] = struct{}{}
+			}
+
 			var statuses []gatewayStatus
-			gatewayMetrics := getGatewayMetrics(k8sAPI, pods.Items, opts.wait)
+			gatewayMetrics := getGatewayMetrics(k8sAPI, pods.Items, leaders, opts.wait)
 			for _, gateway := range gatewayMetrics {
 				if gateway.err != nil {
 					fmt.Fprintf(os.Stderr, "Failed to get gateway status for %s: %s\n", gateway.clusterName, gateway.err)
 					continue
 				}
 				gatewayStatus := gatewayStatus{
-					clusterName: gateway.clusterName,
+					ClusterName: gateway.clusterName,
 				}
 
 				// Parse the gateway metrics so that we can extract liveness
@@ -95,6 +117,22 @@ func newGatewaysCommand() *cobra.Command {
 					continue
 				}
 
+				skipGatewayMetrics := false
+				for _, metrics := range parsedMetrics["gateway_enabled"].GetMetric() {
+					if !isTargetClusterMetric(metrics, gateway.clusterName) {
+						continue
+					}
+
+					if metrics.GetGauge().GetValue() != 1 {
+						skipGatewayMetrics = true
+						break
+					}
+				}
+
+				if skipGatewayMetrics {
+					continue
+				}
+
 				// Check if the gateway is alive by using the gateway_alive
 				// metric and ensuring the label matches the target cluster.
 				for _, metrics := range parsedMetrics["gateway_alive"].GetMetric() {
@@ -102,7 +140,7 @@ func newGatewaysCommand() *cobra.Command {
 						continue
 					}
 					if metrics.GetGauge().GetValue() == 1 {
-						gatewayStatus.alive = true
+						gatewayStatus.Alive = true
 						break
 					}
 				}
@@ -118,7 +156,7 @@ func newGatewaysCommand() *cobra.Command {
 					fmt.Fprintf(os.Stderr, "Failed to list services for %s: %s\n", gateway.clusterName, err)
 					continue
 				}
-				gatewayStatus.numberOfServices = len(services.Items)
+				gatewayStatus.NumberOfServices = len(services.Items)
 
 				// Check the last observed latency by using the
 				// gateway_latency metric and ensuring the label the target
@@ -127,31 +165,48 @@ func newGatewaysCommand() *cobra.Command {
 					if !isTargetClusterMetric(metrics, gateway.clusterName) {
 						continue
 					}
-					gatewayStatus.latency = uint64(metrics.GetGauge().GetValue())
+					gatewayStatus.Latency = uint64(metrics.GetGauge().GetValue())
 					break
 				}
 
 				statuses = append(statuses, gatewayStatus)
 			}
-			renderGateways(statuses, stdout)
+
+			switch opts.output {
+			case "json":
+				out, err := json.MarshalIndent(statuses, "", "  ")
+				if err != nil {
+					fmt.Fprint(os.Stderr, err)
+					os.Exit(1)
+				}
+				fmt.Printf("%s\n", out)
+			default:
+				renderGateways(statuses, stdout)
+			}
+
 			return nil
 		},
 	}
 
 	cmd.Flags().StringVar(&opts.clusterName, "cluster-name", "", "the name of the target cluster")
 	cmd.Flags().DurationVarP(&opts.wait, "wait", "w", opts.wait, "time allowed to fetch diagnostics")
+	cmd.Flags().StringVarP(&opts.output, "output", "o", "", "used to print output in different format")
 
 	return cmd
 }
 
-func getGatewayMetrics(k8sAPI *k8s.KubernetesAPI, pods []corev1.Pod, wait time.Duration) []gatewayMetrics {
+func getGatewayMetrics(k8sAPI *k8s.KubernetesAPI, pods []corev1.Pod, leaders map[string]struct{}, wait time.Duration) []gatewayMetrics {
 	var metrics []gatewayMetrics
 	metricsChan := make(chan gatewayMetrics)
-	var activeRoutines int32
+	var wg sync.WaitGroup
 	for _, pod := range pods {
-		atomic.AddInt32(&activeRoutines, 1)
+		if _, found := leaders[pod.Name]; !found {
+			continue
+		}
+
+		wg.Add(1)
 		go func(p corev1.Pod) {
-			defer atomic.AddInt32(&activeRoutines, -1)
+			defer wg.Done()
 			name := p.Labels[k8s.RemoteClusterNameLabel]
 			container, err := getServiceMirrorContainer(p)
 			if err != nil {
@@ -169,20 +224,29 @@ func getGatewayMetrics(k8sAPI *k8s.KubernetesAPI, pods []corev1.Pod, wait time.D
 			}
 		}(pod)
 	}
+
+	go func() {
+		wg.Wait()
+		close(metricsChan)
+	}()
+
 	timeout := time.NewTimer(wait)
 	defer timeout.Stop()
+
 wait:
 	for {
 		select {
 		case metric := <-metricsChan:
+			if metric.clusterName == "" {
+				// channel closed
+				break wait
+			}
 			metrics = append(metrics, metric)
 		case <-timeout.C:
 			break wait
 		}
-		if atomic.LoadInt32(&activeRoutines) == 0 {
-			break
-		}
 	}
+
 	return metrics
 }
 
@@ -254,20 +318,20 @@ func buildGatewaysTable() table.Table {
 
 func gatewayStatusToTableRow(status gatewayStatus) []string {
 	valueOrPlaceholder := func(value string) string {
-		if status.alive {
+		if status.Alive {
 			return value
 		}
 		return "-"
 	}
 	alive := "False"
-	if status.alive {
+	if status.Alive {
 		alive = "True"
 	}
 	return []string{
-		status.clusterName,
+		status.ClusterName,
 		alive,
-		fmt.Sprint(status.numberOfServices),
-		valueOrPlaceholder(fmt.Sprintf("%dms", status.latency)),
+		fmt.Sprint(status.NumberOfServices),
+		valueOrPlaceholder(fmt.Sprintf("%dms", status.Latency)),
 	}
 
 }

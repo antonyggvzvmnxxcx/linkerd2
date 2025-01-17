@@ -8,9 +8,15 @@
 linkerdVersion: linkerdVersionValue
 # -- Kubernetes DNS Domain name to use
 clusterDomain: cluster.local
+# -- Additional labels to add to all pods
+podLabels: {}
+# -- Labels to apply to all resources
+commonLabels: {}
 # -- Trust domain used for identity
 # @default -- clusterDomain
 identityTrustDomain: ""
+# -- Specifies the number of old ReplicaSets to retain to allow rollback.
+revisionHistoryLimit: 10
 
 # -- Docker registry for all viz components
 defaultRegistry: cr.l5d.io/linkerd
@@ -22,6 +28,8 @@ defaultLogLevel: info
 defaultLogFormat: plain
 # -- UID for all the viz components
 defaultUID: 2103
+# -- GID for all the viz components
+defaultGID: 2103
 
 # -- Namespace of the Linkerd core control-plane install
 linkerdNamespace: linkerd
@@ -46,10 +54,17 @@ tolerations: &default_tolerations
 # Enable this only when you have multiple replicas of components.
 enablePodAntiAffinity: false
 
+# -- enables the creation of pod disruption budgets for tap, tap-injector, web and metrics-api components
+enablePodDisruptionBudget: false
+
 # -- NodeAffinity section, See the
 # [K8S documentation](https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#node-affinity)
 # for more information
 # nodeAffinity:
+
+# -- Creates a Job that adds necessary metadata to the extension's namespace
+# during install; disable if lack of privileges require doing this manually
+createNamespaceMetadataJob: true
 
 # -- Create Roles and RoleBindings to associate this extension's
 # ServiceAccounts to the control plane PSP resource. This requires that
@@ -60,13 +75,20 @@ enablePSP: false
 # -- url of external prometheus instance
 prometheusUrl: ""
 
+# -- Name of the prometheus credentials secret. If this is set, the metrics-api
+# will use basic auth to connect to prometheus and load the user and password
+# from the "user" and "password" keys respectively in the given secret. The
+# secret must be in the same namespace and must exist before the metrics-api is
+# deployed.
+prometheusCredsSecret: ""
+
 # -- url of external jaeger instance
-# Set this to `jaeger.linkerd-jaeger.svc.<clusterDomain>` if you plan to use jaeger extension
+# Set this to `jaeger.linkerd-jaeger.svc.<clusterDomain>:16686` if you plan to use jaeger extension
 jaegerUrl: ""
 
 # metrics API configuration
 metricsAPI:
-  # -- number of replicas of the metrics-api component
+  # -- Number of replicas of the metrics-api component
   replicas: 1
   # -- log level of the metrics-api component
   # @default -- defaultLogLevel
@@ -112,6 +134,9 @@ metricsAPI:
   # -- UID for the metrics-api resource
   UID:
 
+  # -- GID for the metrics-api resource
+  GID:
+
   # -- NodeSelector section, See the
   # [K8S documentation](https://kubernetes.io/docs/concepts/configuration/assign-pod-node/#nodeselector) for more information
   nodeSelector: *default_node_selector
@@ -120,9 +145,14 @@ metricsAPI:
   # for more information
   tolerations: *default_tolerations
 
+  # -- metrics-api service configuration
+  service:
+    # -- Additional annotations to add to metrics-api service
+    annotations: {}
+
 # tap configuration
 tap:
-    # -- Number of tap component replicas
+  # -- Number of tap component replicas
   replicas: 1
   # -- log level of the tap component
   # @default -- defaultLogLevel
@@ -195,13 +225,24 @@ tap:
       # -- Amount of ephemeral storage that the tap container requests
       request: ""
 
+  # -- List of headers that will be ignored for Linkerd Tap
+  ignoreHeaders: []
+
   proxy:
     # -- If set, overrides default proxy resources for the proxy injected
     # into the tap component
     # resources:
 
-  # -- UID for the dashboard resource
+  # -- UID for the tap component
   UID:
+
+  # -- GID for the tap component
+  GID:
+
+  # -- tap service configuration
+  service:
+    # -- Additional annotations to add to tap service
+    annotations: {}
 
 # tapInjector configuration
 tapInjector:
@@ -226,16 +267,20 @@ tapInjector:
     # @default -- defaultImagePullPolicy
     pullPolicy: ""
 
+  # -- Namespace selector used by admission webhook.
   namespaceSelector:
-    # matchExpressions:
-    # - key: runlevel
-    #   operator: NotIn
-    #   values: ["0","1"]
+    matchExpressions:
+    - key: kubernetes.io/metadata.name
+      operator: NotIn
+      values:
+      - kube-system
   objectSelector:
     # matchLabels:
     #   foo: bar
   # -- UID for the tapInjector resource
   UID:
+  # -- GID for the tapInjector resource
+  GID:
   failurePolicy: Ignore
   resources:
     cpu:
@@ -293,6 +338,11 @@ tapInjector:
   # for more information.
   injectCaFromSecret: ""
 
+  # -- tap service configuration
+  service:
+    # -- Additional annotations to add to tapInjector service
+    annotations: {}
+
 # web dashboard configuration
 dashboard:
   # -- Number of replicas of dashboard
@@ -318,6 +368,9 @@ dashboard:
 
   # -- UID for the dashboard resource
   UID:
+
+  # -- GID for the dashboard resource
+  GID:
 
   # -- Restrict the Linkerd Dashboard's default privileges to disallow Tap and Check
   restrictPrivileges: false
@@ -348,6 +401,34 @@ dashboard:
     # into the dashboard component
     # resources:
 
+  # -- dashboard service configuration
+  service:
+    # -- Additional annotations to add to dashboard service
+    annotations: {}
+    # -- Additional labels to add to dashboard service
+    labels: {}
+
+namespaceMetadata:
+  image:
+    # -- Docker registry for the namespace-metadata instance
+    # @default -- defaultRegistry
+    registry: ""
+    # -- Docker image name for the namespace-metadata instance
+    name: extension-init
+    # -- Docker image tag for the namespace-metadata instance
+    tag: v0.1.2
+    # -- Pull policy for the namespace-metadata instance
+    # @default -- defaultImagePullPolicy
+    pullPolicy: ""
+
+  # -- NodeSelector section, See the
+  # [K8S documentation](https://kubernetes.io/docs/concepts/configuration/assign-pod-node/#nodeselector) for more information
+  nodeSelector: *default_node_selector
+  # -- Tolerations section, See the
+  # [K8S documentation](https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/)
+  # for more information
+  tolerations: *default_tolerations
+
 grafana:
   # -- url of an in-cluster Grafana instance with reverse proxy configured, used by the
   # Linkerd viz web dashboard to provide direct links to specific Grafana
@@ -370,7 +451,7 @@ prometheus:
     # -- Docker image name for the prometheus instance
     name: prometheus
     # -- Docker image tag for the prometheus instance
-    tag: v2.30.3
+    tag: v2.48.1
     # -- Pull policy for the prometheus instance
     # @default -- defaultImagePullPolicy
     pullPolicy: ""
@@ -392,6 +473,9 @@ prometheus:
     scrape_interval: 10s
     scrape_timeout: 10s
     evaluation_interval: 10s
+
+  # -- annotations for the prometheus pod
+  podAnnotations: {}
 
   # -- Alert relabeling is applied to alerts before they are sent to the
   # Alertmanager.
@@ -438,6 +522,18 @@ prometheus:
   #   relabel_configs:
   #   - action: labelmap
   #     regex: __meta_kubernetes_node_label_(.+)
+
+  # -- A metricRelabelConfigs section allows to drop high cardinality metrics.
+  # *NOTE:* Please use with caution. Some metrics are needed for linkerd-viz to
+  # function properly.
+  metricRelabelConfigs:
+  # This allows us to fine tune prometheus cardinality by dropping certain
+  # metrics as suggested here: https://itnext.io/optimizing-linkerd-metrics-in-prometheus-de607ec10f6b
+  #
+  # Ex:
+  # - action: keep
+  #   source_labels: [le]
+  #   regex: "(?i)(|10|50|100|500|1000|10000|30000|\\+Inf)"
 
   # -- A sidecarContainers section specifies a list of secondary containers to run
   # in the prometheus pod e.g. to export data to non-prometheus systems

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/golang/protobuf/ptypes/duration"
@@ -19,6 +20,8 @@ import (
 	"github.com/linkerd/linkerd2/pkg/protohttp"
 	metricsPb "github.com/linkerd/linkerd2/viz/metrics-api/gen/viz"
 	"github.com/linkerd/linkerd2/viz/pkg/api"
+	hc "github.com/linkerd/linkerd2/viz/pkg/healthcheck"
+	"github.com/linkerd/linkerd2/viz/pkg/jsonpath"
 	vizutil "github.com/linkerd/linkerd2/viz/pkg/util"
 	tapPb "github.com/linkerd/linkerd2/viz/tap/gen/tap"
 	"github.com/linkerd/linkerd2/viz/tap/pkg"
@@ -27,7 +30,7 @@ import (
 	"google.golang.org/grpc/codes"
 )
 
-type renderTapEventFunc func(*tapPb.TapEvent, string) string
+type renderTapEventFunc func(*tapPb.TapEvent, ...renderOptions) string
 
 type tapOptions struct {
 	namespace     string
@@ -122,8 +125,20 @@ func newTapOptions() *tapOptions {
 	}
 }
 
+type renderFilter struct {
+	JsonPath string
+}
+
+type renderOptions func(f *renderFilter)
+
+func WithJsonPath(jsonPath string) renderOptions {
+	return func(r *renderFilter) {
+		r.JsonPath = jsonPath
+	}
+}
+
 func (o *tapOptions) validate() error {
-	if o.output == "" || o.output == wideOutput || o.output == jsonOutput {
+	if o.output == "" || o.output == wideOutput || o.output == jsonOutput || strings.HasPrefix(o.output, jsonPathOutput) {
 		return nil
 	}
 
@@ -206,13 +221,16 @@ func NewCmdTap() *cobra.Command {
 				options.namespace = pkgcmd.GetDefaultNamespace(kubeconfigPath, kubeContext)
 			}
 
-			api.CheckClientOrExit(healthcheck.Options{
-				ControlPlaneNamespace: controlPlaneNamespace,
-				KubeConfig:            kubeconfigPath,
-				Impersonate:           impersonate,
-				ImpersonateGroup:      impersonateGroup,
-				KubeContext:           kubeContext,
-				APIAddr:               apiAddr,
+			api.CheckClientOrExit(hc.VizOptions{
+				Options: &healthcheck.Options{
+					ControlPlaneNamespace: controlPlaneNamespace,
+					KubeConfig:            kubeconfigPath,
+					Impersonate:           impersonate,
+					ImpersonateGroup:      impersonateGroup,
+					KubeContext:           kubeContext,
+					APIAddr:               apiAddr,
+				},
+				VizNamespaceOverride: vizNamespace,
 			})
 
 			requestParams := pkg.TapRequestParams{
@@ -273,7 +291,7 @@ func NewCmdTap() *cobra.Command {
 	cmd.PersistentFlags().StringVar(&options.path, "path", options.path,
 		"Display requests with paths that start with this prefix")
 	cmd.PersistentFlags().StringVarP(&options.output, "output", "o", options.output,
-		fmt.Sprintf("Output format. One of: \"%s\", \"%s\"", wideOutput, jsonOutput))
+		fmt.Sprintf("Output format. One of: \"%s\", \"%s\", \"%s\"", wideOutput, jsonOutput, jsonPathOutput))
 	cmd.PersistentFlags().StringVarP(&options.labelSelector, "selector", "l", options.labelSelector,
 		"Selector (label query) to filter on, supports '=', '==', and '!='")
 
@@ -290,24 +308,31 @@ func requestTapByResourceFromAPI(ctx context.Context, w io.Writer, k8sAPI *k8s.K
 	}
 	defer body.Close()
 
-	return writeTapEventsToBuffer(w, reader, req, options)
+	return writeTapEventsToBuffer(w, reader, options)
 }
 
-func writeTapEventsToBuffer(w io.Writer, tapByteStream *bufio.Reader, req *tapPb.TapByResourceRequest, options *tapOptions) error {
-	switch options.output {
-	case "":
-		return renderTapEvents(tapByteStream, w, renderTapEvent, "")
-	case wideOutput:
-		resource := req.GetTarget().GetResource().GetType()
-		return renderTapEvents(tapByteStream, w, renderTapEvent, resource)
-	case jsonOutput:
-		return renderTapEvents(tapByteStream, w, renderTapEventJSON, "")
+func writeTapEventsToBuffer(w io.Writer, tapByteStream *bufio.Reader, options *tapOptions) error {
+	output := options.output
+
+	switch {
+	case output == "":
+		return renderTapEvents(tapByteStream, w, renderTapEvent)
+	case output == wideOutput:
+		return renderTapEvents(tapByteStream, w, renderTapEventWide)
+	case output == jsonOutput:
+		return renderTapEvents(tapByteStream, w, renderTapEventJSON)
+	case strings.HasPrefix(output, jsonPathOutput):
+		jPathFilter, err := jsonpath.GetJsonPathFlagVal(output)
+		if err != nil {
+			return err
+		}
+		return renderTapEvents(tapByteStream, w, renderTapEventJSON, WithJsonPath(jPathFilter))
 	default:
 		return fmt.Errorf("unknown output format: %q", options.output)
 	}
 }
 
-func renderTapEvents(tapByteStream *bufio.Reader, w io.Writer, render renderTapEventFunc, resource string) error {
+func renderTapEvents(tapByteStream *bufio.Reader, w io.Writer, render renderTapEventFunc, opts ...renderOptions) error {
 	for {
 		log.Debug("Waiting for data...")
 		event := tapPb.TapEvent{}
@@ -319,7 +344,7 @@ func renderTapEvents(tapByteStream *bufio.Reader, w io.Writer, render renderTapE
 			fmt.Fprintln(os.Stderr, err)
 			break
 		}
-		_, err = fmt.Fprintln(w, render(&event, resource))
+		_, err = fmt.Fprintln(w, render(&event, opts...))
 		if err != nil {
 			return err
 		}
@@ -328,8 +353,19 @@ func renderTapEvents(tapByteStream *bufio.Reader, w io.Writer, render renderTapE
 	return nil
 }
 
+func renderTapEventWide(event *tapPb.TapEvent, _ ...renderOptions) string {
+	dst := dst(event)
+	src := src(event)
+
+	out := []string{renderTapEvent(event)}
+	out = append(out, src.formatResource()...)
+	out = append(out, dst.formatResource()...)
+	out = append(out, routeLabels(event)...)
+	return strings.Join(out, " ")
+}
+
 // renderTapEvent renders a Public API TapEvent to a string.
-func renderTapEvent(event *tapPb.TapEvent, resource string) string {
+func renderTapEvent(event *tapPb.TapEvent, _ ...renderOptions) string {
 	dst := dst(event)
 	src := src(event)
 
@@ -353,73 +389,57 @@ func renderTapEvent(event *tapPb.TapEvent, resource string) string {
 		tls,
 	)
 
-	// If `resource` is non-empty, then
-	resources := ""
-	if resource != "" {
-		resources = fmt.Sprintf(
-			"%s%s%s",
-			src.formatResource(resource),
-			dst.formatResource(resource),
-			routeLabels(event),
-		)
-	}
-
 	switch ev := event.GetHttp().GetEvent().(type) {
 	case *tapPb.TapEvent_Http_RequestInit_:
-		return fmt.Sprintf("req id=%d:%d %s :method=%s :authority=%s :path=%s%s",
+		return fmt.Sprintf("req id=%d:%d %s :method=%s :authority=%s :path=%s",
 			ev.RequestInit.GetId().GetBase(),
 			ev.RequestInit.GetId().GetStream(),
 			flow,
 			vizutil.HTTPMethodToString(ev.RequestInit.GetMethod()),
 			ev.RequestInit.GetAuthority(),
 			ev.RequestInit.GetPath(),
-			resources,
 		)
 
 	case *tapPb.TapEvent_Http_ResponseInit_:
-		return fmt.Sprintf("rsp id=%d:%d %s :status=%d latency=%dµs%s",
+		return fmt.Sprintf("rsp id=%d:%d %s :status=%d latency=%dµs",
 			ev.ResponseInit.GetId().GetBase(),
 			ev.ResponseInit.GetId().GetStream(),
 			flow,
 			ev.ResponseInit.GetHttpStatus(),
-			ev.ResponseInit.GetSinceRequestInit().GetNanos()/1000,
-			resources,
+			ev.ResponseInit.GetSinceRequestInit().AsDuration().Microseconds(),
 		)
 
 	case *tapPb.TapEvent_Http_ResponseEnd_:
 		switch eos := ev.ResponseEnd.GetEos().GetEnd().(type) {
 		case *metricsPb.Eos_GrpcStatusCode:
 			return fmt.Sprintf(
-				"end id=%d:%d %s grpc-status=%s duration=%dµs response-length=%dB%s",
+				"end id=%d:%d %s grpc-status=%s duration=%dµs response-length=%dB",
 				ev.ResponseEnd.GetId().GetBase(),
 				ev.ResponseEnd.GetId().GetStream(),
 				flow,
 				codes.Code(eos.GrpcStatusCode),
-				ev.ResponseEnd.GetSinceResponseInit().GetNanos()/1000,
+				ev.ResponseEnd.GetSinceResponseInit().AsDuration().Microseconds(),
 				ev.ResponseEnd.GetResponseBytes(),
-				resources,
 			)
 
 		case *metricsPb.Eos_ResetErrorCode:
 			return fmt.Sprintf(
-				"end id=%d:%d %s reset-error=%+v duration=%dµs response-length=%dB%s",
+				"end id=%d:%d %s reset-error=%+v duration=%dµs response-length=%dB",
 				ev.ResponseEnd.GetId().GetBase(),
 				ev.ResponseEnd.GetId().GetStream(),
 				flow,
 				eos.ResetErrorCode,
-				ev.ResponseEnd.GetSinceResponseInit().GetNanos()/1000,
+				ev.ResponseEnd.GetSinceResponseInit().AsDuration().Microseconds(),
 				ev.ResponseEnd.GetResponseBytes(),
-				resources,
 			)
 
 		default:
-			return fmt.Sprintf("end id=%d:%d %s duration=%dµs response-length=%dB%s",
+			return fmt.Sprintf("end id=%d:%d %s duration=%dµs response-length=%dB",
 				ev.ResponseEnd.GetId().GetBase(),
 				ev.ResponseEnd.GetId().GetStream(),
 				flow,
-				ev.ResponseEnd.GetSinceResponseInit().GetNanos()/1000,
+				ev.ResponseEnd.GetSinceResponseInit().AsDuration().Microseconds(),
 				ev.ResponseEnd.GetResponseBytes(),
-				resources,
 			)
 		}
 
@@ -429,8 +449,19 @@ func renderTapEvent(event *tapPb.TapEvent, resource string) string {
 }
 
 // renderTapEventJSON renders a Public API TapEvent to a string in JSON format.
-func renderTapEventJSON(event *tapPb.TapEvent, _ string) string {
+func renderTapEventJSON(event *tapPb.TapEvent, opts ...renderOptions) string {
+	filter := &renderFilter{}
+	for _, opt := range opts {
+		opt(filter)
+	}
 	m := mapPublicToDisplayTapEvent(event)
+	if filter.JsonPath != "" {
+		filteredJson, err := jsonpath.GetJsonFilteredByJPath(m, filter.JsonPath)
+		if err != nil {
+			return err.Error()
+		}
+		return filteredJson[0]
+	}
 	e, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return fmt.Sprintf("{\"error marshalling JSON\": \"%s\"}", err)
@@ -597,44 +628,24 @@ func (p *peer) formatAddr() string {
 	)
 }
 
-// formatResource returns a label describing what Kubernetes resources the peer
-// belongs to. If the peer belongs to a resource of kind `resourceKind`, it will
-// return a label for that resource; otherwise, it will fall back to the peer's
-// pod name. Additionally, if the resource is not of type `namespace`, it will
-// also add a label describing the peer's resource.
-func (p *peer) formatResource(resourceKind string) string {
-	var s string
-	if resourceName, exists := p.labels[resourceKind]; exists {
-		kind := resourceKind
-		if short := k8s.ShortNameFromCanonicalResourceName(resourceKind); short != "" {
-			kind = short
-		}
-		s = fmt.Sprintf(
-			" %s_res=%s/%s",
-			p.direction,
-			kind,
-			resourceName,
-		)
-	} else if pod, hasPod := p.labels[k8s.Pod]; hasPod {
-		s = fmt.Sprintf(" %s_pod=%s", p.direction, pod)
+// formatResource returns the peer's labels formatted and sorted.
+func (p *peer) formatResource() []string {
+	labels := []string{}
+	for k, v := range p.labels {
+		labels = append(labels, fmt.Sprintf("%s_%s=%s", p.direction, k, v))
 	}
-	if resourceKind != k8s.Namespace {
-		if ns, hasNs := p.labels[k8s.Namespace]; hasNs {
-			s += fmt.Sprintf(" %s_ns=%s", p.direction, ns)
-		}
-	}
-	return s
+	sort.Strings(labels)
+	return labels
 }
 
 func (p *peer) tlsStatus() string {
 	return p.labels["tls"]
 }
 
-func routeLabels(event *tapPb.TapEvent) string {
-	out := ""
+func routeLabels(event *tapPb.TapEvent) []string {
+	out := []string{}
 	for key, val := range event.GetRouteMeta().GetLabels() {
-		out = fmt.Sprintf("%s rt_%s=%s", out, key, val)
+		out = append(out, fmt.Sprintf("rt_%s=%s", key, val))
 	}
-
 	return out
 }

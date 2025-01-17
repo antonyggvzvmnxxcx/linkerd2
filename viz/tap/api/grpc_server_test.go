@@ -425,7 +425,7 @@ status:
 				t.Fatalf("Invalid port: %s", port)
 			}
 
-			fakeGrpcServer := newGRPCTapServer(uint(tapPort), "controller-ns", "cluster.local", k8sAPI)
+			fakeGrpcServer := newGRPCTapServer(uint(tapPort), "controller-ns", "cluster.local", k8sAPI, nil)
 
 			k8sAPI.Sync(nil)
 
@@ -663,11 +663,11 @@ status:
 			if err != nil {
 				t.Fatalf("NewFakeAPI returned an error: %s", err)
 			}
-			s, _ := NewGrpcTapServer(4190, "controller-ns", "cluster.local", k8sAPI)
+			s, _ := NewGrpcTapServer(4190, "controller-ns", "cluster.local", k8sAPI, nil)
 			k8sAPI.Sync(nil)
 
 			labels := make(map[string]string)
-			ip, err := addr.ParsePublicIPV4(exp.requestedIP)
+			ip, err := addr.ParsePublicIP(exp.requestedIP)
 			if err != nil {
 				t.Fatalf("Error parsing IP %s: %s", exp.requestedIP, err)
 			}

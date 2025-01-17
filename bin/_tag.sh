@@ -11,7 +11,7 @@ clean_head() {
 }
 
 named_tag() {
-    tag="$(git name-rev --tags --name-only "$(git_sha_head)")"
+    tag=$(git name-rev --tags --name-only "$(git_sha_head)")
     tag=${tag%"^0"}
     echo "${tag}"
 }
@@ -20,6 +20,7 @@ head_root_tag() {
     if clean_head ; then
         clean_head_root_tag
     else
+        USER=${USER:-nobody}
         name=${USER//[^[:alnum:].-]/}
         echo "dev-$(git_sha_head)-$name"
     fi

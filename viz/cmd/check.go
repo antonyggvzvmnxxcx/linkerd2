@@ -54,7 +54,7 @@ code.`,
 		},
 	}
 
-	cmd.Flags().StringVarP(&options.output, "output", "o", options.output, "Output format. One of: basic, json")
+	cmd.Flags().StringVarP(&options.output, "output", "o", options.output, "Output format. One of: table, json, short")
 	cmd.Flags().BoolVar(&options.proxy, "proxy", options.proxy, "Also run data-plane checks, to determine if the data plane is healthy")
 	cmd.Flags().DurationVar(&options.wait, "wait", options.wait, "Maximum allowed time for all tests to pass")
 	cmd.Flags().StringVarP(&options.namespace, "namespace", "n", options.namespace, "Namespace to use for --proxy checks (default: all namespaces)")
@@ -71,15 +71,18 @@ func configureAndRunChecks(wout io.Writer, werr io.Writer, options *checkOptions
 		return fmt.Errorf("validation error when executing check command: %w", err)
 	}
 
-	hc := vizHealthCheck.NewHealthChecker([]healthcheck.CategoryID{}, &healthcheck.Options{
-		ControlPlaneNamespace: controlPlaneNamespace,
-		KubeConfig:            kubeconfigPath,
-		KubeContext:           kubeContext,
-		Impersonate:           impersonate,
-		ImpersonateGroup:      impersonateGroup,
-		APIAddr:               apiAddr,
-		RetryDeadline:         time.Now().Add(options.wait),
-		DataPlaneNamespace:    options.namespace,
+	hc := vizHealthCheck.NewHealthChecker([]healthcheck.CategoryID{}, &vizHealthCheck.VizOptions{
+		Options: &healthcheck.Options{
+			ControlPlaneNamespace: controlPlaneNamespace,
+			KubeConfig:            kubeconfigPath,
+			KubeContext:           kubeContext,
+			Impersonate:           impersonate,
+			ImpersonateGroup:      impersonateGroup,
+			APIAddr:               apiAddr,
+			RetryDeadline:         time.Now().Add(options.wait),
+			DataPlaneNamespace:    options.namespace,
+		},
+		VizNamespaceOverride: vizNamespace,
 	})
 	err = hc.InitializeKubeAPIClient()
 	if err != nil {
@@ -87,7 +90,7 @@ func configureAndRunChecks(wout io.Writer, werr io.Writer, options *checkOptions
 		os.Exit(1)
 	}
 
-	hc.AppendCategories(hc.VizCategory())
+	hc.AppendCategories(hc.VizCategory(true))
 	if options.proxy {
 		hc.AppendCategories(hc.VizDataPlaneCategory())
 	}

@@ -17,6 +17,7 @@ import (
 	pb "github.com/linkerd/linkerd2/viz/metrics-api/gen/viz"
 	"github.com/linkerd/linkerd2/viz/metrics-api/util"
 	"github.com/linkerd/linkerd2/viz/pkg/api"
+	hc "github.com/linkerd/linkerd2/viz/pkg/healthcheck"
 	pkgUtil "github.com/linkerd/linkerd2/viz/pkg/util"
 	"github.com/spf13/cobra"
 	v1 "k8s.io/api/core/v1"
@@ -127,13 +128,16 @@ func NewCmdEdges() *cobra.Command {
 
 			// The gRPC client is concurrency-safe, so we can reuse it in all the following goroutines
 			// https://github.com/grpc/grpc-go/issues/682
-			client := api.CheckClientOrExit(healthcheck.Options{
-				ControlPlaneNamespace: controlPlaneNamespace,
-				KubeConfig:            kubeconfigPath,
-				Impersonate:           impersonate,
-				ImpersonateGroup:      impersonateGroup,
-				KubeContext:           kubeContext,
-				APIAddr:               apiAddr,
+			client := api.CheckClientOrExit(hc.VizOptions{
+				Options: &healthcheck.Options{
+					ControlPlaneNamespace: controlPlaneNamespace,
+					KubeConfig:            kubeconfigPath,
+					Impersonate:           impersonate,
+					ImpersonateGroup:      impersonateGroup,
+					KubeContext:           kubeContext,
+					APIAddr:               apiAddr,
+				},
+				VizNamespaceOverride: vizNamespace,
 			})
 
 			c := make(chan indexedEdgeResults, len(reqs))
@@ -282,56 +286,54 @@ func writeEdgesToBuffer(rows []*pb.Edge, w *tabwriter.Writer, options *edgesOpti
 	maxMsgLength := len(msgHeader)
 
 	edgeRows := []edgeRow{}
-	if len(rows) != 0 {
-		for _, r := range rows {
-			clientID := r.ClientId
-			serverID := r.ServerId
-			msg := r.NoIdentityMsg
-			if msg == "" && options.outputFormat != jsonOutput {
-				msg = okStatus
-			}
-			if len(clientID) > 0 {
-				parts := strings.Split(clientID, ".")
-				clientID = parts[0] + "." + parts[1]
-			}
-			if len(serverID) > 0 {
-				parts := strings.Split(serverID, ".")
-				serverID = parts[0] + "." + parts[1]
-			}
+	for _, r := range rows {
+		clientID := r.ClientId
+		serverID := r.ServerId
+		msg := r.NoIdentityMsg
+		if msg == "" && options.outputFormat != jsonOutput {
+			msg = okStatus
+		}
+		if len(clientID) > 0 {
+			parts := strings.Split(clientID, ".")
+			clientID = parts[0] + "." + parts[1]
+		}
+		if len(serverID) > 0 {
+			parts := strings.Split(serverID, ".")
+			serverID = parts[0] + "." + parts[1]
+		}
 
-			row := edgeRow{
-				client:       clientID,
-				server:       serverID,
-				msg:          msg,
-				src:          r.Src.Name,
-				srcNamespace: r.Src.Namespace,
-				dst:          r.Dst.Name,
-				dstNamespace: r.Dst.Namespace,
-			}
+		row := edgeRow{
+			client:       clientID,
+			server:       serverID,
+			msg:          msg,
+			src:          r.Src.Name,
+			srcNamespace: r.Src.Namespace,
+			dst:          r.Dst.Name,
+			dstNamespace: r.Dst.Namespace,
+		}
 
-			edgeRows = append(edgeRows, row)
+		edgeRows = append(edgeRows, row)
 
-			if len(r.Src.Name) > maxSrcLength {
-				maxSrcLength = len(r.Src.Name)
-			}
-			if len(r.Src.Namespace) > maxSrcNamespaceLength {
-				maxSrcNamespaceLength = len(r.Src.Namespace)
-			}
-			if len(r.Dst.Name) > maxDstLength {
-				maxDstLength = len(r.Dst.Name)
-			}
-			if len(r.Dst.Namespace) > maxDstNamespaceLength {
-				maxDstNamespaceLength = len(r.Dst.Namespace)
-			}
-			if len(clientID) > maxClientLength {
-				maxClientLength = len(clientID)
-			}
-			if len(serverID) > maxServerLength {
-				maxServerLength = len(serverID)
-			}
-			if len(msg) > maxMsgLength {
-				maxMsgLength = len(msg)
-			}
+		if len(r.Src.Name) > maxSrcLength {
+			maxSrcLength = len(r.Src.Name)
+		}
+		if len(r.Src.Namespace) > maxSrcNamespaceLength {
+			maxSrcNamespaceLength = len(r.Src.Namespace)
+		}
+		if len(r.Dst.Name) > maxDstLength {
+			maxDstLength = len(r.Dst.Name)
+		}
+		if len(r.Dst.Namespace) > maxDstNamespaceLength {
+			maxDstNamespaceLength = len(r.Dst.Namespace)
+		}
+		if len(clientID) > maxClientLength {
+			maxClientLength = len(clientID)
+		}
+		if len(serverID) > maxServerLength {
+			maxServerLength = len(serverID)
+		}
+		if len(msg) > maxMsgLength {
+			maxMsgLength = len(msg)
 		}
 	}
 

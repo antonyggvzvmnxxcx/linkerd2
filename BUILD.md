@@ -22,7 +22,7 @@ about testing from source can be found in the [TEST.md](TEST.md) guide.
     - [Formatting](#formatting)
     - [Building the CLI for development](#building-the-cli-for-development)
     - [Running the control plane for development](#running-the-control-plane-for-development)
-    - [Running the Tap APIService for development](#running-the-tap-apiservice-for-development)
+    - [Running the Tap APIService for development](#debugging-the-tap-apiservice-for-development)
     - [Generating CLI docs](#generating-cli-docs)
   - [Web](#web)
     - [First time setup](#first-time-setup)
@@ -39,9 +39,7 @@ about testing from source can be found in the [TEST.md](TEST.md) guide.
 - [Linkerd Helm Chart](#linkerd-helm-chart)
   - [Extensions Helm charts](#extensions-helm-charts)
   - [Making changes to the chart templates](#making-changes-to-the-chart-templates)
-  - [Generating Helm charts docs](#generating-helm-charts-docs)
-  - [Using helm-docs](#using-helm-docs)
-  - [Annotating values.yml](#annotating-values.yml)
+  - [Annotating values.yaml](#annotating-valuesyaml)
   - [Markdown templates](#markdown-templates)
 
 ## Repo layout
@@ -165,6 +163,7 @@ bin/docker-build
 bin/image-load --k3d
 
 # install linkerd
+bin/linkerd install --crds | kubectl apply -f -
 bin/linkerd install | kubectl apply -f -
 
 # wait for the core components to be ready, then install linkerd-viz
@@ -508,39 +507,16 @@ Whenever you make changes to the files under
 [`bin/helm-build`](bin/helm-build) which will refresh the dependencies and lint
 the templates.
 
-### Generating Helm charts docs
+### Annotating values.yaml
 
-Whenever a new chart is created, or updated a README should be generated from
-the chart's values.yml. This can be done by utilizing the bundled
-[helm-docs](https://github.com/norwoodj/helm-docs) binary. For adding additional
-information, such as specific installation instructions a README template is
-required to be created. Check existing charts for examples.
-
-#### Using helm-docs
-
-Example usage:
-
-```sh
-bin/helm-docs
-bin/helm-docs --dry-run #Prints to cli instead
-bin/helm-docs --chart-search-root=./charts #Sets search root for charts
-bin/helm-docs --template-files=README.md.gotmpl #Sets the template file used
-```
-
-Note:
-The tool searches through the current directory and sub-directories by default.
-For additional information checkout their repo above.
-
-#### Annotating values.yml
-
-To allow helm-docs to properly document the values in values.yml a descriptive
+To allow helm-docs to properly document the values in `values.yaml` a descriptive
 comment is required. This can be done in two ways.
 Either comment the value directly above with
 `# -- This is a really nice value` where the double dashes automatically
 annotates the value. Another explicit usage is to type out the value name.
 `# global.MyNiceValue -- I really like this value`
 
-#### Markdown templates
+### Markdown templates
 
 In order to accommodate for extra data that might not have a proper place in the
 ´values.yaml´ file the corresponding ´README.md.gotmpl´ can be modified for each

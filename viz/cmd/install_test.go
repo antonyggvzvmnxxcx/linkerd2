@@ -73,10 +73,12 @@ func TestRender(t *testing.T) {
 			map[string]interface{}{
 				"defaultLogLevel": "debug",
 				"defaultUID":      1234,
+				"defaultGID":      1234,
 				"defaultRegistry": "gcr.io/linkerd",
 				"tap": map[string]interface{}{
 					"logLevel": "info",
 					"UID":      5678,
+					"GID":      5678,
 					"image": map[string]interface{}{
 						"registry": "cr.l5d.io/linkerd",
 						"tag":      "stable-9.2",
@@ -93,7 +95,7 @@ func TestRender(t *testing.T) {
 		t.Run(fmt.Sprintf("%d: %s", i, tc.goldenFileName), func(t *testing.T) {
 			var buf bytes.Buffer
 			// Merge overrides with default
-			if err := render(&buf, charts.MergeMaps(defaultValues, tc.values)); err != nil {
+			if err := render(&buf, charts.MergeMaps(defaultValues, tc.values), "yaml"); err != nil {
 				t.Fatalf("Failed to render templates: %v", err)
 			}
 			if err := testDataDiffer.DiffTestYAML(tc.goldenFileName, buf.String()); err != nil {

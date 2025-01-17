@@ -1,7 +1,6 @@
 package edgeupgradetest
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -9,21 +8,14 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-	"text/template"
-	"time"
 
 	"github.com/go-test/deep"
 	"github.com/linkerd/linkerd2/pkg/flags"
-	"github.com/linkerd/linkerd2/pkg/healthcheck"
 	"github.com/linkerd/linkerd2/pkg/k8s"
 	"github.com/linkerd/linkerd2/pkg/tree"
-	"github.com/linkerd/linkerd2/pkg/version"
 	"github.com/linkerd/linkerd2/testutil"
 )
 
-//////////////////////
-///   TEST SETUP   ///
-//////////////////////
 var (
 	TestHelper *testutil.TestHelper
 
@@ -49,9 +41,6 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-//////////////////////
-/// TEST EXECUTION ///
-//////////////////////
 func TestInstallResourcesPreUpgrade(t *testing.T) {
 	versions, err := TestHelper.GetReleaseChannelVersions()
 	if err != nil {
@@ -224,9 +213,9 @@ func TestUpgradeCli(t *testing.T) {
 	cmdOut, err = TestHelper.KubectlApplyWithArgs(out, []string{
 		"--prune",
 		"-l", "linkerd.io/control-plane-ns=linkerd",
-		"--prune-whitelist", "apps/v1/deployment",
-		"--prune-whitelist", "core/v1/service",
-		"--prune-whitelist", "core/v1/configmap",
+		"--prune-allowlist", "apps/v1/deployment",
+		"--prune-allowlist", "core/v1/service",
+		"--prune-allowlist", "core/v1/configmap",
 	}...)
 	if err != nil {
 		testutil.AnnotatedFatalf(t, "'kubectl apply' command failed",
@@ -413,32 +402,8 @@ func TestVersionPostInstall(t *testing.T) {
 }
 
 func TestCheckProxyPostUpgrade(t *testing.T) {
-	cmd := []string{
-		"check", "--proxy", "-n", TestHelper.GetLinkerdNamespace(),
-		"--expected-version", TestHelper.GetVersion(),
-		"--wait=60m",
-	}
-
-	expected := getCheckOutput(t, "check.upgrade.golden", TestHelper.GetVizNamespace())
-	// Check output is non-deterministic for proxies that are not running the
-	// current version. This tends to cause a mismatch between the expected
-	// output (which is templated) and the actual output. We add a retry to "eventually"
-	// get a match
-	err := TestHelper.RetryFor(5*time.Minute, func() error {
-		out, err := TestHelper.LinkerdRun(cmd...)
-		if err != nil {
-			return fmt.Errorf("%w\n%s", err, out)
-		}
-
-		if !strings.Contains(out, expected) {
-			return fmt.Errorf("expected: %s\nactual: %s", expected, out)
-		}
-
-		return nil
-	})
-
-	if err != nil {
-		testutil.AnnotatedFatalf(t, "'linkerd check' command timed-out", "'linkerd check' command timed-out\n%v", err)
+	if err := TestHelper.TestCheckProxy(TestHelper.GetVersion(), TestHelper.GetLinkerdNamespace()); err != nil {
+		t.Fatalf("'linkerd check --proxy' command failed: %s", err)
 	}
 }
 
@@ -468,33 +433,4 @@ func TestUpgradeTestAppWorksAfterUpgrade(t *testing.T) {
 		testutil.AnnotatedFatalf(t, "error exercising test app endpoint after upgrade",
 			"error exercising test app endpoint after upgrade %s", err)
 	}
-}
-
-func getCheckOutput(t *testing.T, goldenFile string, namespace string) string {
-	pods, err := TestHelper.KubernetesHelper.GetPods(context.Background(), namespace, nil)
-	if err != nil {
-		testutil.AnnotatedFatal(t, fmt.Sprintf("failed to retrieve pods: %s", err), err)
-	}
-
-	proxyVersionErr := ""
-	err = healthcheck.CheckProxyVersionsUpToDate(pods, version.Channels{})
-	if err != nil {
-		proxyVersionErr = err.Error()
-	}
-
-	tpl := template.Must(template.ParseFiles("testdata" + "/" + goldenFile))
-	vars := struct {
-		ProxyVersionErr string
-		HintURL         string
-	}{
-		proxyVersionErr,
-		healthcheck.HintBaseURL(TestHelper.GetVersion()),
-	}
-
-	var expected bytes.Buffer
-	if err := tpl.Execute(&expected, vars); err != nil {
-		testutil.AnnotatedFatal(t, fmt.Sprintf("failed to parse %s template: %s", goldenFile, err), err)
-	}
-
-	return expected.String()
 }

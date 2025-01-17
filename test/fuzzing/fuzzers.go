@@ -9,7 +9,7 @@ import (
 
 // FuzzParsePorts fuzzes the ParsePorts function.
 func FuzzParsePorts(data []byte) int {
-	_, _ = util.ParsePorts(string(data))
+	_ = util.ParsePorts(string(data))
 	return 1
 }
 
@@ -36,7 +36,7 @@ func FuzzParseContainerOpaquePorts(data []byte) int {
 	if err != nil {
 		return 0
 	}
-	_ = util.ParseContainerOpaquePorts(override, containers)
+	_ = util.ParseContainerOpaquePorts(override, util.GetNamedPorts(containers))
 	return 1
 }
 

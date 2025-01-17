@@ -5,6 +5,7 @@ metadata:
   labels:
     linkerd.io/cni-resource: "true"
     config.linkerd.io/admission-webhooks: disabled
+    pod-security.kubernetes.io/enforce: privileged
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -22,7 +23,7 @@ metadata:
     linkerd.io/cni-resource: "true"
 rules:
 - apiGroups: [""]
-  resources: ["pods", "nodes", "namespaces"]
+  resources: ["pods", "nodes", "namespaces", "services"]
   verbs: ["list", "get", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -52,16 +53,12 @@ data:
   dest_cni_bin_dir: "/opt/cni/bin"
   # The CNI network configuration to install on each node. The special
   # values in this config will be automatically populated.
+  # iptables-mode and ipv6 flags are only considered as of linkerd-cni v1.4.0
   cni_network_config: |-
     {
       "name": "linkerd-cni",
       "type": "linkerd-cni",
       "log_level": "info",
-      "policy": {
-          "type": "k8s",
-          "k8s_api_root": "https://__KUBERNETES_SERVICE_HOST__:__KUBERNETES_SERVICE_PORT__",
-          "k8s_auth_token": "__SERVICEACCOUNT_TOKEN__"
-      },
       "kubernetes": {
           "kubeconfig": "__KUBECONFIG_FILEPATH__"
       },
@@ -73,7 +70,9 @@ data:
         "inbound-ports-to-ignore": ["4191","4190","80","8080"],
         "outbound-ports-to-ignore": ["443","1000"],
         "simulate": false,
-        "use-wait-flag": false
+        "use-wait-flag": false,
+        "iptables-mode": "legacy",
+        "ipv6": false
       }
     }
 ---
@@ -88,6 +87,7 @@ metadata:
   annotations:
     linkerd.io/created-by: linkerd/cli dev-undefined
 spec:
+  revisionHistoryLimit: 10
   selector:
     matchLabels:
       k8s-app: linkerd-cni
@@ -99,14 +99,18 @@ spec:
     metadata:
       labels:
         k8s-app: linkerd-cni
+        linkerd.io/cni-resource: "true"
       annotations:
         linkerd.io/created-by: linkerd/cli dev-undefined
-        linkerd.io/cni-resource: "true"
         linkerd.io/inject: disabled
     spec:
+      tolerations:
+        - operator: Exists
       nodeSelector:
         kubernetes.io/os: linux
-      hostNetwork: true
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       serviceAccountName: linkerd-cni
       containers:
       # This container installs the linkerd CNI binaries
@@ -114,7 +118,8 @@ spec:
       # script copies the files into place and then sleeps so
       # that Kubernetes doesn't keep trying to restart it.
       - name: install-cni
-        image: cr.l5d.io/linkerd/cni-plugin:dev-undefined
+        image: cr.l5d.io/linkerd/cni-plugin:v1.6.0
+        imagePullPolicy: 
         env:
         - name: DEST_CNI_NET_DIR
           valueFrom:
@@ -151,7 +156,8 @@ spec:
           name: linkerd-tmp-dir
         securityContext:
           readOnlyRootFilesystem: true
-          privileged: 
+          privileged: false
+        resources:
       volumes:
       - name: cni-bin-dir
         hostPath:

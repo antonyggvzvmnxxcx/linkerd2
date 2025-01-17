@@ -27,7 +27,7 @@ import (
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 )
 
-var minAPIVersion = [3]int{1, 20, 0}
+var minAPIVersion = [3]int{1, 22, 0}
 
 // KubernetesAPI provides a client for accessing a Kubernetes cluster.
 // TODO: support ServiceProfile ClientSet. A prerequisite is moving the
@@ -50,17 +50,33 @@ func NewAPI(configPath, kubeContext string, impersonate string, impersonateGroup
 	if err != nil {
 		return nil, fmt.Errorf("error configuring Kubernetes API client: %w", err)
 	}
-	return NewAPIForConfig(config, impersonate, impersonateGroup, timeout)
+	return NewAPIForConfig(config, impersonate, impersonateGroup, timeout, 0, 0)
 }
 
 // NewAPIForConfig uses a Kubernetes config to construct a client for accessing
 // the configured cluster
-func NewAPIForConfig(config *rest.Config, impersonate string, impersonateGroup []string, timeout time.Duration) (*KubernetesAPI, error) {
+func NewAPIForConfig(
+	config *rest.Config,
+	impersonate string,
+	impersonateGroup []string,
+	timeout time.Duration,
+	qps float32,
+	burst int,
+) (*KubernetesAPI, error) {
 
 	// k8s' client-go doesn't support injecting context
 	// https://github.com/kubernetes/kubernetes/issues/46503
 	// but we can set the timeout manually
 	config.Timeout = timeout
+	if qps > 0 && burst > 0 {
+		config.QPS = qps
+		config.Burst = burst
+		prometheus.SetClientQPS("k8s", config.QPS)
+		prometheus.SetClientBurst("k8s", config.Burst)
+	} else {
+		prometheus.SetClientQPS("k8s", rest.DefaultQPS)
+		prometheus.SetClientBurst("k8s", rest.DefaultBurst)
+	}
 	wt := config.WrapTransport
 	config.WrapTransport = prometheus.ClientWithTelemetry("k8s", wt)
 
@@ -140,7 +156,7 @@ func (kubeAPI *KubernetesAPI) CheckVersion(versionInfo *version.Info) error {
 
 // NamespaceExists validates whether a given namespace exists.
 func (kubeAPI *KubernetesAPI) NamespaceExists(ctx context.Context, namespace string) (bool, error) {
-	ns, err := kubeAPI.CoreV1().Namespaces().Get(ctx, namespace, metav1.GetOptions{})
+	ns, err := kubeAPI.GetNamespace(ctx, namespace)
 	if kerrors.IsNotFound(err) {
 		return false, nil
 	}
@@ -151,7 +167,12 @@ func (kubeAPI *KubernetesAPI) NamespaceExists(ctx context.Context, namespace str
 	return ns != nil, nil
 }
 
-// GetNodes returs all the nodes in a cluster.
+// GetNamespace returns the namespace with a given name, if one exists.
+func (kubeAPI *KubernetesAPI) GetNamespace(ctx context.Context, namespace string) (*corev1.Namespace, error) {
+	return kubeAPI.CoreV1().Namespaces().Get(ctx, namespace, metav1.GetOptions{})
+}
+
+// GetNodes returns all the nodes in a cluster.
 func (kubeAPI *KubernetesAPI) GetNodes(ctx context.Context) ([]corev1.Node, error) {
 	nodes, err := kubeAPI.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
@@ -208,11 +229,16 @@ func (kubeAPI *KubernetesAPI) GetNamespaceWithExtensionLabel(ctx context.Context
 
 // GetPodStatus receives a pod and returns the pod status, based on `kubectl` logic.
 // This logic is imported and adapted from the github.com/kubernetes/kubernetes project:
-// https://github.com/kubernetes/kubernetes/blob/33a3e325f754d179b25558dee116fca1c67d353a/pkg/printers/internalversion/printers.go#L558-L640
+// https://github.com/kubernetes/kubernetes/blob/v1.31.0-alpha.0/pkg/printers/internalversion/printers.go#L860
 func GetPodStatus(pod corev1.Pod) string {
 	reason := string(pod.Status.Phase)
 	if pod.Status.Reason != "" {
 		reason = pod.Status.Reason
+	}
+
+	initContainers := make(map[string]*corev1.Container)
+	for i := range pod.Spec.InitContainers {
+		initContainers[pod.Spec.InitContainers[i].Name] = &pod.Spec.InitContainers[i]
 	}
 
 	initializing := false
@@ -220,6 +246,9 @@ func GetPodStatus(pod corev1.Pod) string {
 		container := pod.Status.InitContainerStatuses[i]
 		switch {
 		case container.State.Terminated != nil && container.State.Terminated.ExitCode == 0 && container.State.Terminated.Signal == 0:
+			continue
+		case isRestartableInitContainer(initContainers[container.Name]) &&
+			container.Started != nil && *container.Started && container.Ready:
 			continue
 		case container.State.Terminated != nil:
 			// initialization is failed
@@ -271,9 +300,20 @@ func GetPodStatus(pod corev1.Pod) string {
 	return reason
 }
 
+// Borrowed from
+// https://github.com/kubernetes/kubernetes/blob/v1.31.0-alpha.0/pkg/printers/internalversion/printers.go#L3209
+func isRestartableInitContainer(initContainer *corev1.Container) bool {
+	if initContainer.RestartPolicy == nil {
+		return false
+	}
+
+	return *initContainer.RestartPolicy == corev1.ContainerRestartPolicyAlways
+}
+
 // GetProxyReady returns true if the pod contains a proxy that is ready
 func GetProxyReady(pod corev1.Pod) bool {
-	for _, container := range pod.Status.ContainerStatuses {
+	statuses := append(pod.Status.InitContainerStatuses, pod.Status.ContainerStatuses...)
+	for _, container := range statuses {
 		if container.Name == ProxyContainerName {
 			return container.Ready
 		}
@@ -283,8 +323,14 @@ func GetProxyReady(pod corev1.Pod) bool {
 
 // GetProxyVersion returns the container proxy's version, if any
 func GetProxyVersion(pod corev1.Pod) string {
-	for _, container := range pod.Spec.Containers {
+	containers := append(pod.Spec.InitContainers, pod.Spec.Containers...)
+	for _, container := range containers {
 		if container.Name == ProxyContainerName {
+			if strings.Contains(container.Image, "@") {
+				// Proxy container image is specified with digest instead of
+				// tag. We are unable to determine version.
+				return ""
+			}
 			parts := strings.Split(container.Image, ":")
 			return parts[len(parts)-1]
 		}

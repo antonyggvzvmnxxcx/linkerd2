@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
 
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
@@ -12,7 +11,8 @@ import (
 	spv1alpha2 "github.com/linkerd/linkerd2/controller/gen/apis/serviceprofile/v1alpha2"
 	l5dcrdclient "github.com/linkerd/linkerd2/controller/gen/client/clientset/versioned"
 	l5dcrdinformer "github.com/linkerd/linkerd2/controller/gen/client/informers/externalversions"
-	srvinformers "github.com/linkerd/linkerd2/controller/gen/client/informers/externalversions/server/v1beta1"
+	ewinformers "github.com/linkerd/linkerd2/controller/gen/client/informers/externalversions/externalworkload/v1beta1"
+	srvinformers "github.com/linkerd/linkerd2/controller/gen/client/informers/externalversions/server/v1beta3"
 	spinformers "github.com/linkerd/linkerd2/controller/gen/client/informers/externalversions/serviceprofile/v1alpha2"
 	"github.com/linkerd/linkerd2/pkg/k8s"
 	"github.com/prometheus/client_golang/prometheus"
@@ -21,7 +21,6 @@ import (
 	"google.golang.org/grpc/status"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
-	batchv1beta1 "k8s.io/api/batch/v1beta1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -29,54 +28,29 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/informers"
-	arinformers "k8s.io/client-go/informers/admissionregistration/v1beta1"
+	arinformers "k8s.io/client-go/informers/admissionregistration/v1"
 	appv1informers "k8s.io/client-go/informers/apps/v1"
 	batchv1informers "k8s.io/client-go/informers/batch/v1"
-	batchv1beta1informers "k8s.io/client-go/informers/batch/v1beta1"
 	coreinformers "k8s.io/client-go/informers/core/v1"
-	discoveryinformers "k8s.io/client-go/informers/discovery/v1beta1"
+	discoveryinformers "k8s.io/client-go/informers/discovery/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 )
 
-// APIResource is an enum for Kubernetes API resource types, for use when
-// initializing a K8s API, to describe which resource types to interact with.
-type APIResource int
-
-// These constants enumerate Kubernetes resource types.
-const (
-	CJ APIResource = iota
-	CM
-	Deploy
-	DS
-	Endpoint
-	Job
-	MWC // mutating webhook configuration
-	NS
-	Pod
-	RC
-	RS
-	SP
-	SS
-	Svc
-	Node
-	Secret
-	ES // EndpointSlice resource
-	Srv
-	Saz
-)
-
 // API provides shared informers for all Kubernetes objects
 type API struct {
+	promGauges
+
 	Client        kubernetes.Interface
 	DynamicClient dynamic.Interface
 
-	cj       batchv1beta1informers.CronJobInformer
+	cj       batchv1informers.CronJobInformer
 	cm       coreinformers.ConfigMapInformer
 	deploy   appv1informers.DeploymentInformer
 	ds       appv1informers.DaemonSetInformer
 	endpoint coreinformers.EndpointsInformer
 	es       discoveryinformers.EndpointSliceInformer
+	ew       ewinformers.ExternalWorkloadInformer
 	job      batchv1informers.JobInformer
 	mwc      arinformers.MutatingWebhookConfigurationInformer
 	ns       coreinformers.NamespaceInformer
@@ -93,12 +67,13 @@ type API struct {
 	syncChecks            []cache.InformerSynced
 	sharedInformers       informers.SharedInformerFactory
 	l5dCrdSharedInformers l5dcrdinformer.SharedInformerFactory
-
-	gauges []prometheus.GaugeFunc
 }
 
-// InitializeAPI creates Kubernetes clients and returns an initialized API wrapper.
-func InitializeAPI(ctx context.Context, kubeConfig string, ensureClusterWideAccess bool, resources ...APIResource) (*API, error) {
+// InitializeAPI creates Kubernetes clients and returns an initialized API
+// wrapper. This creates informers on each one of resources passed, registering
+// metrics on each one; don't forget to call UnregisterGauges() on the returned
+// API reference to clean them up!
+func InitializeAPI(ctx context.Context, kubeConfig string, ensureClusterWideAccess bool, cluster string, resources ...APIResource) (*API, error) {
 	config, err := k8s.GetConfig(kubeConfig, "")
 	if err != nil {
 		return nil, fmt.Errorf("error configuring Kubernetes API client: %w", err)
@@ -109,25 +84,28 @@ func InitializeAPI(ctx context.Context, kubeConfig string, ensureClusterWideAcce
 		return nil, err
 	}
 
-	k8sClient, err := k8s.NewAPIForConfig(config, "", []string{}, 0)
+	k8sClient, err := k8s.NewAPIForConfig(config, "", []string{}, 0, 0, 0)
 	if err != nil {
 		return nil, err
 	}
 
-	return initAPI(ctx, k8sClient, dynamicClient, config, ensureClusterWideAccess, resources...)
+	return initAPI(ctx, k8sClient, dynamicClient, config, ensureClusterWideAccess, cluster, resources...)
 }
 
-// InitializeAPIForConfig creates Kubernetes clients and returns an initialized API wrapper.
-func InitializeAPIForConfig(ctx context.Context, kubeConfig *rest.Config, ensureClusterWideAccess bool, resources ...APIResource) (*API, error) {
-	k8sClient, err := k8s.NewAPIForConfig(kubeConfig, "", []string{}, 0)
+// InitializeAPIForConfig creates Kubernetes clients and returns an initialized
+// API wrapper. This creates informers on each one of resources passed,
+// registering metrics on each one; don't forget to call UnregisterGauges() on
+// the returned API reference to clean them up!
+func InitializeAPIForConfig(ctx context.Context, kubeConfig *rest.Config, ensureClusterWideAccess bool, cluster string, resources ...APIResource) (*API, error) {
+	k8sClient, err := k8s.NewAPIForConfig(kubeConfig, "", []string{}, 0, 0, 0)
 	if err != nil {
 		return nil, err
 	}
 
-	return initAPI(ctx, k8sClient, nil, kubeConfig, ensureClusterWideAccess, resources...)
+	return initAPI(ctx, k8sClient, nil, kubeConfig, ensureClusterWideAccess, cluster, resources...)
 }
 
-func initAPI(ctx context.Context, k8sClient *k8s.KubernetesAPI, dynamicClient dynamic.Interface, kubeConfig *rest.Config, ensureClusterWideAccess bool, resources ...APIResource) (*API, error) {
+func initAPI(ctx context.Context, k8sClient *k8s.KubernetesAPI, dynamicClient dynamic.Interface, kubeConfig *rest.Config, ensureClusterWideAccess bool, cluster string, resources ...APIResource) (*API, error) {
 	// check for cluster-wide access
 	var err error
 
@@ -152,6 +130,11 @@ func initAPI(ctx context.Context, k8sClient *k8s.KubernetesAPI, dynamicClient dy
 			if err != nil {
 				return nil, err
 			}
+		case res == ExtWorkload:
+			err := k8s.ExtWorkloadAccess(ctx, k8sClient)
+			if err != nil {
+				return nil, err
+			}
 		default:
 			continue
 		}
@@ -162,7 +145,7 @@ func initAPI(ctx context.Context, k8sClient *k8s.KubernetesAPI, dynamicClient dy
 		break
 	}
 
-	api := NewAPI(k8sClient, dynamicClient, l5dCrdClient, resources...)
+	api := NewClusterScopedAPI(k8sClient, dynamicClient, l5dCrdClient, cluster, resources...)
 	for _, gauge := range api.gauges {
 		if err := prometheus.Register(gauge); err != nil {
 			log.Warnf("failed to register Prometheus gauge %s: %s", gauge.Desc().String(), err)
@@ -171,18 +154,49 @@ func initAPI(ctx context.Context, k8sClient *k8s.KubernetesAPI, dynamicClient dy
 	return api, nil
 }
 
-// NewAPI takes a Kubernetes client and returns an initialized API.
-func NewAPI(
+// NewClusterScopedAPI takes a Kubernetes client and returns an initialized
+// cluster-wide API. This creates informers on each one of resources passed,
+// registering metrics on each one; don't forget to call UnregisterGauges() on
+// the returned API reference to clean them up!
+func NewClusterScopedAPI(
 	k8sClient kubernetes.Interface,
 	dynamicClient dynamic.Interface,
 	l5dCrdClient l5dcrdclient.Interface,
+	cluster string,
 	resources ...APIResource,
 ) *API {
-	sharedInformers := informers.NewSharedInformerFactory(k8sClient, 10*time.Minute)
+	sharedInformers := informers.NewSharedInformerFactory(k8sClient, ResyncTime)
+	return newAPI(k8sClient, dynamicClient, l5dCrdClient, sharedInformers, cluster, resources...)
+}
 
+// NewNamespacedAPI takes a Kubernetes client and returns an initialized API
+// scoped to namespace. This creates informers on each one of resources passed,
+// registering metrics on each one; don't forget to call UnregisterGauges() on
+// the returned API reference to clean them up!
+func NewNamespacedAPI(
+	k8sClient kubernetes.Interface,
+	dynamicClient dynamic.Interface,
+	l5dCrdClient l5dcrdclient.Interface,
+	namespace string,
+	cluster string,
+	resources ...APIResource,
+) *API {
+	sharedInformers := informers.NewSharedInformerFactoryWithOptions(k8sClient, ResyncTime, informers.WithNamespace(namespace))
+	return newAPI(k8sClient, dynamicClient, l5dCrdClient, sharedInformers, cluster, resources...)
+}
+
+// newAPI takes a Kubernetes client and returns an initialized API.
+func newAPI(
+	k8sClient kubernetes.Interface,
+	dynamicClient dynamic.Interface,
+	l5dCrdClient l5dcrdclient.Interface,
+	sharedInformers informers.SharedInformerFactory,
+	cluster string,
+	resources ...APIResource,
+) *API {
 	var l5dCrdSharedInformers l5dcrdinformer.SharedInformerFactory
 	if l5dCrdClient != nil {
-		l5dCrdSharedInformers = l5dcrdinformer.NewSharedInformerFactory(l5dCrdClient, 10*time.Minute)
+		l5dCrdSharedInformers = l5dcrdinformer.NewSharedInformerFactory(l5dCrdClient, ResyncTime)
 	}
 
 	api := &API{
@@ -193,86 +207,97 @@ func NewAPI(
 		l5dCrdSharedInformers: l5dCrdSharedInformers,
 	}
 
+	informerLabels := prometheus.Labels{
+		"cluster": cluster,
+	}
+
 	for _, resource := range resources {
 		switch resource {
 		case CJ:
-			api.cj = sharedInformers.Batch().V1beta1().CronJobs()
+			api.cj = sharedInformers.Batch().V1().CronJobs()
 			api.syncChecks = append(api.syncChecks, api.cj.Informer().HasSynced)
-			api.addInformerSizeGauge("cron_job", api.cj.Informer())
+			api.promGauges.addInformerSize(k8s.CronJob, informerLabels, api.cj.Informer())
 		case CM:
 			api.cm = sharedInformers.Core().V1().ConfigMaps()
 			api.syncChecks = append(api.syncChecks, api.cm.Informer().HasSynced)
-			api.addInformerSizeGauge("config_map", api.cm.Informer())
+			api.promGauges.addInformerSize(k8s.ConfigMap, informerLabels, api.cm.Informer())
 		case Deploy:
 			api.deploy = sharedInformers.Apps().V1().Deployments()
 			api.syncChecks = append(api.syncChecks, api.deploy.Informer().HasSynced)
-			api.addInformerSizeGauge("deployment", api.deploy.Informer())
+			api.promGauges.addInformerSize(k8s.Deployment, informerLabels, api.deploy.Informer())
 		case DS:
 			api.ds = sharedInformers.Apps().V1().DaemonSets()
 			api.syncChecks = append(api.syncChecks, api.ds.Informer().HasSynced)
-			api.addInformerSizeGauge("daemon_set", api.ds.Informer())
+			api.promGauges.addInformerSize(k8s.DaemonSet, informerLabels, api.ds.Informer())
 		case Endpoint:
 			api.endpoint = sharedInformers.Core().V1().Endpoints()
 			api.syncChecks = append(api.syncChecks, api.endpoint.Informer().HasSynced)
-			api.addInformerSizeGauge("endpoint", api.endpoint.Informer())
+			api.promGauges.addInformerSize(k8s.Endpoints, informerLabels, api.endpoint.Informer())
 		case ES:
-			api.es = sharedInformers.Discovery().V1beta1().EndpointSlices()
+			api.es = sharedInformers.Discovery().V1().EndpointSlices()
 			api.syncChecks = append(api.syncChecks, api.es.Informer().HasSynced)
-			api.addInformerSizeGauge("endpoint_slice", api.es.Informer())
+			api.promGauges.addInformerSize(k8s.EndpointSlices, informerLabels, api.es.Informer())
+		case ExtWorkload:
+			if l5dCrdSharedInformers == nil {
+				panic("Linkerd CRD shared informer not configured")
+			}
+			api.ew = l5dCrdSharedInformers.Externalworkload().V1beta1().ExternalWorkloads()
+			api.syncChecks = append(api.syncChecks, api.ew.Informer().HasSynced)
+			api.promGauges.addInformerSize(k8s.ExtWorkload, informerLabels, api.ew.Informer())
 		case Job:
 			api.job = sharedInformers.Batch().V1().Jobs()
 			api.syncChecks = append(api.syncChecks, api.job.Informer().HasSynced)
-			api.addInformerSizeGauge("job", api.job.Informer())
+			api.promGauges.addInformerSize(k8s.Job, informerLabels, api.job.Informer())
 		case MWC:
-			api.mwc = sharedInformers.Admissionregistration().V1beta1().MutatingWebhookConfigurations()
+			api.mwc = sharedInformers.Admissionregistration().V1().MutatingWebhookConfigurations()
 			api.syncChecks = append(api.syncChecks, api.mwc.Informer().HasSynced)
-			api.addInformerSizeGauge("mutating_webhook_configuration", api.mwc.Informer())
+			api.promGauges.addInformerSize(k8s.MutatingWebhookConfig, informerLabels, api.mwc.Informer())
 		case NS:
 			api.ns = sharedInformers.Core().V1().Namespaces()
 			api.syncChecks = append(api.syncChecks, api.ns.Informer().HasSynced)
-			api.addInformerSizeGauge("namespace", api.ns.Informer())
+			api.promGauges.addInformerSize(k8s.Namespace, informerLabels, api.ns.Informer())
 		case Pod:
 			api.pod = sharedInformers.Core().V1().Pods()
 			api.syncChecks = append(api.syncChecks, api.pod.Informer().HasSynced)
-			api.addInformerSizeGauge("pod", api.pod.Informer())
+			api.promGauges.addInformerSize(k8s.Pod, informerLabels, api.pod.Informer())
 		case RC:
 			api.rc = sharedInformers.Core().V1().ReplicationControllers()
 			api.syncChecks = append(api.syncChecks, api.rc.Informer().HasSynced)
-			api.addInformerSizeGauge("replication_controller", api.rc.Informer())
+			api.promGauges.addInformerSize(k8s.ReplicationController, informerLabels, api.rc.Informer())
 		case RS:
 			api.rs = sharedInformers.Apps().V1().ReplicaSets()
 			api.syncChecks = append(api.syncChecks, api.rs.Informer().HasSynced)
-			api.addInformerSizeGauge("replica_set", api.rs.Informer())
+			api.promGauges.addInformerSize(k8s.ReplicaSet, informerLabels, api.rs.Informer())
 		case SP:
 			if l5dCrdSharedInformers == nil {
 				panic("Linkerd CRD shared informer not configured")
 			}
 			api.sp = l5dCrdSharedInformers.Linkerd().V1alpha2().ServiceProfiles()
 			api.syncChecks = append(api.syncChecks, api.sp.Informer().HasSynced)
-			api.addInformerSizeGauge("service_profile", api.sp.Informer())
+			api.promGauges.addInformerSize(k8s.ServiceProfile, informerLabels, api.sp.Informer())
 		case Srv:
 			if l5dCrdSharedInformers == nil {
 				panic("Linkerd CRD shared informer not configured")
 			}
-			api.srv = l5dCrdSharedInformers.Server().V1beta1().Servers()
+			api.srv = l5dCrdSharedInformers.Server().V1beta3().Servers()
 			api.syncChecks = append(api.syncChecks, api.srv.Informer().HasSynced)
-			api.addInformerSizeGauge("server", api.srv.Informer())
+			api.promGauges.addInformerSize(k8s.Server, informerLabels, api.srv.Informer())
 		case SS:
 			api.ss = sharedInformers.Apps().V1().StatefulSets()
 			api.syncChecks = append(api.syncChecks, api.ss.Informer().HasSynced)
-			api.addInformerSizeGauge("stateful_set", api.ss.Informer())
+			api.promGauges.addInformerSize(k8s.StatefulSet, informerLabels, api.ss.Informer())
 		case Svc:
 			api.svc = sharedInformers.Core().V1().Services()
 			api.syncChecks = append(api.syncChecks, api.svc.Informer().HasSynced)
-			api.addInformerSizeGauge("service", api.svc.Informer())
+			api.promGauges.addInformerSize(k8s.Service, informerLabels, api.svc.Informer())
 		case Node:
 			api.node = sharedInformers.Core().V1().Nodes()
 			api.syncChecks = append(api.syncChecks, api.node.Informer().HasSynced)
-			api.addInformerSizeGauge("node", api.node.Informer())
+			api.promGauges.addInformerSize(k8s.Node, informerLabels, api.node.Informer())
 		case Secret:
 			api.secret = sharedInformers.Core().V1().Secrets()
 			api.syncChecks = append(api.syncChecks, api.secret.Informer().HasSynced)
-			api.addInformerSizeGauge("secret", api.secret.Informer())
+			api.promGauges.addInformerSize(k8s.Secret, informerLabels, api.secret.Informer())
 		}
 	}
 	return api
@@ -286,15 +311,12 @@ func (api *API) Sync(stopCh <-chan struct{}) {
 		api.l5dCrdSharedInformers.Start(stopCh)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+	waitForCacheSync(api.syncChecks)
+}
 
-	log.Infof("waiting for caches to sync")
-	if !cache.WaitForCacheSync(ctx.Done(), api.syncChecks...) {
-		//nolint:gocritic
-		log.Fatal("failed to sync caches")
-	}
-	log.Infof("caches synced")
+// UnregisterGauges unregisters all the prometheus cache gauges associated to this API
+func (api *API) UnregisterGauges() {
+	api.promGauges.unregister()
 }
 
 // NS provides access to a shared informer and lister for Namespaces.
@@ -378,6 +400,15 @@ func (api *API) ES() discoveryinformers.EndpointSliceInformer {
 	return api.es
 }
 
+// ExtWorkload() provides access to a shared informer and lister for
+// ExternalWorkload CRDs
+func (api *API) ExtWorkload() ewinformers.ExternalWorkloadInformer {
+	if api.ew == nil {
+		panic("ExternalWorkload informer not configured")
+	}
+	return api.ew
+}
+
 // CM provides access to a shared informer and lister for ConfigMaps.
 func (api *API) CM() coreinformers.ConfigMapInformer {
 	if api.cm == nil {
@@ -441,7 +472,7 @@ func (api *API) Secret() coreinformers.SecretInformer {
 }
 
 // CJ provides access to a shared informer and lister for CronJobs.
-func (api *API) CJ() batchv1beta1informers.CronJobInformer {
+func (api *API) CJ() batchv1informers.CronJobInformer {
 	if api.cj == nil {
 		panic("CJ informer not configured")
 	}
@@ -479,6 +510,35 @@ func (api *API) GetObjects(namespace, restype, name string, label labels.Selecto
 	}
 }
 
+// KindSupported returns true if there is an informer configured for the
+// specified resource type.
+func (api *API) KindSupported(restype string) bool {
+	switch restype {
+	case k8s.Namespace:
+		return api.ns != nil
+	case k8s.CronJob:
+		return api.cj != nil
+	case k8s.DaemonSet:
+		return api.ds != nil
+	case k8s.Deployment:
+		return api.deploy != nil
+	case k8s.Job:
+		return api.job != nil
+	case k8s.Pod:
+		return api.pod != nil
+	case k8s.ReplicationController:
+		return api.rc != nil
+	case k8s.ReplicaSet:
+		return api.rs != nil
+	case k8s.Service:
+		return api.svc != nil
+	case k8s.StatefulSet:
+		return api.ss != nil
+	default:
+		return false
+	}
+}
+
 // GetOwnerKindAndName returns the pod owner's kind and name, using owner
 // references from the Kubernetes API. The kind is represented as the Kubernetes
 // singular resource type (e.g. deployment, daemonset, job, etc.).
@@ -488,10 +548,10 @@ func (api *API) GetOwnerKindAndName(ctx context.Context, pod *corev1.Pod, retry 
 	ownerRefs := pod.GetOwnerReferences()
 	if len(ownerRefs) == 0 {
 		// pod without a parent
-		return "pod", pod.Name
+		return k8s.Pod, pod.Name
 	} else if len(ownerRefs) > 1 {
 		log.Debugf("unexpected owner reference count (%d): %+v", len(ownerRefs), ownerRefs)
-		return "pod", pod.Name
+		return k8s.Pod, pod.Name
 	}
 
 	parent := ownerRefs[0]
@@ -521,7 +581,7 @@ func (api *API) GetOwnerKindAndName(ctx context.Context, pod *corev1.Pod, retry 
 			}
 		}
 
-		if !isValidRSParent(rsObj) {
+		if rsObj == nil || !isValidRSParent(rsObj.GetObjectMeta()) {
 			return strings.ToLower(parent.Kind), parent.Name
 		}
 		parentObj = rsObj
@@ -551,7 +611,7 @@ func (api *API) GetPodsFor(obj runtime.Object, includeFailed bool) ([]*corev1.Po
 		namespace = typed.Name
 		selector = labels.Everything()
 
-	case *batchv1beta1.CronJob:
+	case *batchv1.CronJob:
 		namespace = typed.Namespace
 		selector = labels.Everything()
 		jobs, err := api.Job().Lister().Jobs(namespace).List(selector)
@@ -672,7 +732,7 @@ func GetNameAndNamespaceOf(obj runtime.Object) (string, string, error) {
 	case *corev1.Namespace:
 		return typed.Name, typed.Name, nil
 
-	case *batchv1beta1.CronJob:
+	case *batchv1.CronJob:
 		return typed.Name, typed.Namespace, nil
 
 	case *appsv1.DaemonSet:
@@ -925,16 +985,16 @@ func (api *API) getServices(namespace, name string) ([]runtime.Object, error) {
 
 func (api *API) getCronjobs(namespace, name string, labelSelector labels.Selector) ([]runtime.Object, error) {
 	var err error
-	var cronjobs []*batchv1beta1.CronJob
+	var cronjobs []*batchv1.CronJob
 
 	if namespace == "" {
 		cronjobs, err = api.CJ().Lister().List(labelSelector)
 	} else if name == "" {
 		cronjobs, err = api.CJ().Lister().CronJobs(namespace).List(labelSelector)
 	} else {
-		var cronjob *batchv1beta1.CronJob
+		var cronjob *batchv1.CronJob
 		cronjob, err = api.CJ().Lister().CronJobs(namespace).Get(name)
-		cronjobs = []*batchv1beta1.CronJob{cronjob}
+		cronjobs = []*batchv1.CronJob{cronjob}
 	}
 	if err != nil {
 		return nil, err
@@ -1064,15 +1124,6 @@ func (api *API) GetServiceProfileFor(svc *corev1.Service, clientNs, clusterDomai
 	}
 }
 
-func (api *API) addInformerSizeGauge(kind string, inf cache.SharedIndexInformer) {
-	api.gauges = append(api.gauges, prometheus.NewGaugeFunc(prometheus.GaugeOpts{
-		Name: fmt.Sprintf("%s_cache_size", kind),
-		Help: fmt.Sprintf("Number of items in the client-go %s cache", kind),
-	}, func() float64 {
-		return float64(len(inf.GetStore().ListKeys()))
-	}))
-}
-
 func hasOverlap(as, bs []*corev1.Pod) bool {
 	for _, a := range as {
 		for _, b := range bs {
@@ -1093,26 +1144,4 @@ func isPendingOrRunning(pod *corev1.Pod) bool {
 
 func isFailed(pod *corev1.Pod) bool {
 	return pod.Status.Phase == corev1.PodFailed
-}
-
-func isValidRSParent(rs *appsv1.ReplicaSet) bool {
-	if rs == nil || len(rs.GetOwnerReferences()) != 1 {
-		return false
-	}
-
-	validParentKinds := []string{
-		k8s.Job,
-		k8s.StatefulSet,
-		k8s.DaemonSet,
-		k8s.Deployment,
-	}
-
-	rsOwner := rs.GetOwnerReferences()[0]
-	rsOwnerKind := strings.ToLower(rsOwner.Kind)
-	for _, kind := range validParentKinds {
-		if rsOwnerKind == kind {
-			return true
-		}
-	}
-	return false
 }

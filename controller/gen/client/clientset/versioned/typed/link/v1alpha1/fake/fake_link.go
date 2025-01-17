@@ -24,7 +24,6 @@ import (
 	v1alpha1 "github.com/linkerd/linkerd2/controller/gen/apis/link/v1alpha1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	labels "k8s.io/apimachinery/pkg/labels"
-	schema "k8s.io/apimachinery/pkg/runtime/schema"
 	types "k8s.io/apimachinery/pkg/types"
 	watch "k8s.io/apimachinery/pkg/watch"
 	testing "k8s.io/client-go/testing"
@@ -36,28 +35,30 @@ type FakeLinks struct {
 	ns   string
 }
 
-var linksResource = schema.GroupVersionResource{Group: "multicluster.linkerd.io", Version: "v1alpha1", Resource: "links"}
+var linksResource = v1alpha1.SchemeGroupVersion.WithResource("links")
 
-var linksKind = schema.GroupVersionKind{Group: "multicluster.linkerd.io", Version: "v1alpha1", Kind: "Link"}
+var linksKind = v1alpha1.SchemeGroupVersion.WithKind("Link")
 
 // Get takes name of the link, and returns the corresponding link object, and an error if there is any.
 func (c *FakeLinks) Get(ctx context.Context, name string, options v1.GetOptions) (result *v1alpha1.Link, err error) {
+	emptyResult := &v1alpha1.Link{}
 	obj, err := c.Fake.
-		Invokes(testing.NewGetAction(linksResource, c.ns, name), &v1alpha1.Link{})
+		Invokes(testing.NewGetActionWithOptions(linksResource, c.ns, name, options), emptyResult)
 
 	if obj == nil {
-		return nil, err
+		return emptyResult, err
 	}
 	return obj.(*v1alpha1.Link), err
 }
 
 // List takes label and field selectors, and returns the list of Links that match those selectors.
 func (c *FakeLinks) List(ctx context.Context, opts v1.ListOptions) (result *v1alpha1.LinkList, err error) {
+	emptyResult := &v1alpha1.LinkList{}
 	obj, err := c.Fake.
-		Invokes(testing.NewListAction(linksResource, linksKind, c.ns, opts), &v1alpha1.LinkList{})
+		Invokes(testing.NewListActionWithOptions(linksResource, linksKind, c.ns, opts), emptyResult)
 
 	if obj == nil {
-		return nil, err
+		return emptyResult, err
 	}
 
 	label, _, _ := testing.ExtractFromListOptions(opts)
@@ -76,28 +77,30 @@ func (c *FakeLinks) List(ctx context.Context, opts v1.ListOptions) (result *v1al
 // Watch returns a watch.Interface that watches the requested links.
 func (c *FakeLinks) Watch(ctx context.Context, opts v1.ListOptions) (watch.Interface, error) {
 	return c.Fake.
-		InvokesWatch(testing.NewWatchAction(linksResource, c.ns, opts))
+		InvokesWatch(testing.NewWatchActionWithOptions(linksResource, c.ns, opts))
 
 }
 
 // Create takes the representation of a link and creates it.  Returns the server's representation of the link, and an error, if there is any.
 func (c *FakeLinks) Create(ctx context.Context, link *v1alpha1.Link, opts v1.CreateOptions) (result *v1alpha1.Link, err error) {
+	emptyResult := &v1alpha1.Link{}
 	obj, err := c.Fake.
-		Invokes(testing.NewCreateAction(linksResource, c.ns, link), &v1alpha1.Link{})
+		Invokes(testing.NewCreateActionWithOptions(linksResource, c.ns, link, opts), emptyResult)
 
 	if obj == nil {
-		return nil, err
+		return emptyResult, err
 	}
 	return obj.(*v1alpha1.Link), err
 }
 
 // Update takes the representation of a link and updates it. Returns the server's representation of the link, and an error, if there is any.
 func (c *FakeLinks) Update(ctx context.Context, link *v1alpha1.Link, opts v1.UpdateOptions) (result *v1alpha1.Link, err error) {
+	emptyResult := &v1alpha1.Link{}
 	obj, err := c.Fake.
-		Invokes(testing.NewUpdateAction(linksResource, c.ns, link), &v1alpha1.Link{})
+		Invokes(testing.NewUpdateActionWithOptions(linksResource, c.ns, link, opts), emptyResult)
 
 	if obj == nil {
-		return nil, err
+		return emptyResult, err
 	}
 	return obj.(*v1alpha1.Link), err
 }
@@ -112,7 +115,7 @@ func (c *FakeLinks) Delete(ctx context.Context, name string, opts v1.DeleteOptio
 
 // DeleteCollection deletes a collection of objects.
 func (c *FakeLinks) DeleteCollection(ctx context.Context, opts v1.DeleteOptions, listOpts v1.ListOptions) error {
-	action := testing.NewDeleteCollectionAction(linksResource, c.ns, listOpts)
+	action := testing.NewDeleteCollectionActionWithOptions(linksResource, c.ns, opts, listOpts)
 
 	_, err := c.Fake.Invokes(action, &v1alpha1.LinkList{})
 	return err
@@ -120,11 +123,12 @@ func (c *FakeLinks) DeleteCollection(ctx context.Context, opts v1.DeleteOptions,
 
 // Patch applies the patch and returns the patched link.
 func (c *FakeLinks) Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts v1.PatchOptions, subresources ...string) (result *v1alpha1.Link, err error) {
+	emptyResult := &v1alpha1.Link{}
 	obj, err := c.Fake.
-		Invokes(testing.NewPatchSubresourceAction(linksResource, c.ns, name, pt, data, subresources...), &v1alpha1.Link{})
+		Invokes(testing.NewPatchSubresourceActionWithOptions(linksResource, c.ns, name, pt, data, opts, subresources...), emptyResult)
 
 	if obj == nil {
-		return nil, err
+		return emptyResult, err
 	}
 	return obj.(*v1alpha1.Link), err
 }

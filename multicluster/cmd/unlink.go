@@ -9,10 +9,10 @@ import (
 	pkgcmd "github.com/linkerd/linkerd2/pkg/cmd"
 	"github.com/linkerd/linkerd2/pkg/k8s"
 	"github.com/linkerd/linkerd2/pkg/k8s/resource"
-	mc "github.com/linkerd/linkerd2/pkg/multicluster"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	appsv1 "k8s.io/api/apps/v1"
+	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbac "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -53,13 +53,12 @@ func newUnlinkCommand() *cobra.Command {
 				return err
 			}
 
-			_, err = mc.GetLink(cmd.Context(), k.DynamicClient, opts.namespace, opts.clusterName)
+			l, err := k.L5dCrdClient.LinkV1alpha2().Links(opts.namespace).Get(cmd.Context(), opts.clusterName, metav1.GetOptions{})
 			if err != nil {
 				return err
 			}
 
 			secret := resource.NewNamespaced(corev1.SchemeGroupVersion.String(), "Secret", fmt.Sprintf("cluster-credentials-%s", opts.clusterName), opts.namespace)
-			gatewayMirror := resource.NewNamespaced(corev1.SchemeGroupVersion.String(), "Service", fmt.Sprintf("probe-gateway-%s", opts.clusterName), opts.namespace)
 			link := resource.NewNamespaced(k8s.LinkAPIGroupVersion, "Link", opts.clusterName, opts.namespace)
 			clusterRole := resource.New(rbac.SchemeGroupVersion.String(), "ClusterRole", fmt.Sprintf("linkerd-service-mirror-access-local-resources-%s", opts.clusterName))
 			clusterRoleBinding := resource.New(rbac.SchemeGroupVersion.String(), "ClusterRoleBinding", fmt.Sprintf("linkerd-service-mirror-access-local-resources-%s", opts.clusterName))
@@ -67,10 +66,16 @@ func newUnlinkCommand() *cobra.Command {
 			roleBinding := resource.NewNamespaced(rbac.SchemeGroupVersion.String(), "RoleBinding", fmt.Sprintf("linkerd-service-mirror-read-remote-creds-%s", opts.clusterName), opts.namespace)
 			serviceAccount := resource.NewNamespaced(corev1.SchemeGroupVersion.String(), "ServiceAccount", fmt.Sprintf("linkerd-service-mirror-%s", opts.clusterName), opts.namespace)
 			serviceMirror := resource.NewNamespaced(appsv1.SchemeGroupVersion.String(), "Deployment", fmt.Sprintf("linkerd-service-mirror-%s", opts.clusterName), opts.namespace)
+			lease := resource.NewNamespaced(coordinationv1.SchemeGroupVersion.String(), "Lease", fmt.Sprintf("service-mirror-write-%s", opts.clusterName), opts.namespace)
 
 			resources := []resource.Kubernetes{
-				secret, gatewayMirror, link, clusterRole, clusterRoleBinding,
-				role, roleBinding, serviceAccount, serviceMirror,
+				secret, link, clusterRole, clusterRoleBinding,
+				role, roleBinding, serviceAccount, serviceMirror, lease,
+			}
+
+			if l.Spec.ProbeSpec.Path != "" {
+				gatewayMirror := resource.NewNamespaced(corev1.SchemeGroupVersion.String(), "Service", fmt.Sprintf("probe-gateway-%s", opts.clusterName), opts.namespace)
+				resources = append(resources, gatewayMirror)
 			}
 
 			selector := fmt.Sprintf("%s=%s,%s=%s",
@@ -87,9 +92,28 @@ func newUnlinkCommand() *cobra.Command {
 				)
 			}
 
+			selector = fmt.Sprintf("%s=%s", clusterNameLabel, opts.clusterName)
+			destinationCredentials, err := k.CoreV1().Secrets(controlPlaneNamespace).List(cmd.Context(), metav1.ListOptions{LabelSelector: selector})
+			if err != nil {
+				return err
+			}
+			for _, secret := range destinationCredentials.Items {
+				resources = append(resources,
+					resource.NewNamespaced(corev1.SchemeGroupVersion.String(), "Secret", secret.Name, secret.Namespace),
+				)
+			}
+
 			for _, r := range resources {
-				if err := r.RenderResource(stdout); err != nil {
-					log.Errorf("failed to render resource %s: %s", r.Name, err)
+				if opts.output == "yaml" {
+					if err := r.RenderResource(stdout); err != nil {
+						log.Errorf("failed to render resource %s: %s", r.Name, err)
+					}
+				} else if opts.output == "json" {
+					if err := r.RenderResourceJSON(stdout); err != nil {
+						log.Errorf("failed to render resource %s: %s", r.Name, err)
+					}
+				} else {
+					return fmt.Errorf("unsupported format: %s", opts.output)
 				}
 			}
 
@@ -99,6 +123,7 @@ func newUnlinkCommand() *cobra.Command {
 
 	cmd.Flags().StringVar(&opts.namespace, "namespace", defaultMulticlusterNamespace, "The namespace for the service account")
 	cmd.Flags().StringVar(&opts.clusterName, "cluster-name", "", "Cluster name")
+	cmd.Flags().StringVarP(&opts.output, "output", "o", "yaml", "Output format. One of: json|yaml")
 
 	pkgcmd.ConfigureNamespaceFlagCompletion(
 		cmd, []string{"namespace"},

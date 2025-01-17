@@ -2,7 +2,6 @@ package injector
 
 import (
 	"encoding/json"
-	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -13,7 +12,6 @@ import (
 	pkgK8s "github.com/linkerd/linkerd2/pkg/k8s"
 	admissionv1beta1 "k8s.io/api/admission/v1beta1"
 	corev1 "k8s.io/api/core/v1"
-	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
@@ -27,7 +25,9 @@ var (
 func confNsEnabled() *inject.ResourceConfig {
 	return inject.
 		NewResourceConfig(values, inject.OriginWebhook, "linkerd").
-		WithNsAnnotations(map[string]string{pkgK8s.ProxyInjectAnnotation: pkgK8s.ProxyInjectEnabled})
+		WithNsAnnotations(map[string]string{
+			pkgK8s.ProxyInjectAnnotation: pkgK8s.ProxyInjectEnabled,
+		})
 }
 
 func confNsDisabled() *inject.ResourceConfig {
@@ -47,7 +47,9 @@ func confNsWithOpaquePorts() *inject.ResourceConfig {
 func confNsWithoutOpaquePorts() *inject.ResourceConfig {
 	return inject.
 		NewResourceConfig(values, inject.OriginWebhook, "linkerd").
-		WithNsAnnotations(map[string]string{pkgK8s.ProxyInjectAnnotation: pkgK8s.ProxyInjectEnabled})
+		WithNsAnnotations(map[string]string{
+			pkgK8s.ProxyInjectAnnotation: pkgK8s.ProxyInjectEnabled,
+		})
 }
 
 func confNsWithConfigAnnotations() *inject.ResourceConfig {
@@ -97,29 +99,22 @@ func TestGetPodPatch(t *testing.T) {
 				conf:     confNsDisabled(),
 			},
 			{
+				filename: "pod-inject-enabled.yaml",
+				ns:       nsDisabled,
+				conf:     confNsDisabled(),
+			},
+			{
 				filename: "pod-with-debug-disabled.yaml",
 				ns:       nsDisabled,
 				conf:     confNsDisabled(),
 			},
 		}
 
-		expectedPatchBytes, err := factory.FileContents("pod.patch.json")
-		if err != nil {
-			t.Fatalf("Unexpected error: %s", err)
-		}
-		expectedPatch, err := unmarshalPatch(expectedPatchBytes)
-		if err != nil {
-			t.Fatalf("Unexpected error: %s", err)
-		}
-
-		for id, testCase := range testCases {
+		_, expectedPatch := loadPatch(factory, t, "pod.patch.json")
+		for _, testCase := range testCases {
 			testCase := testCase // pin
-			t.Run(fmt.Sprintf("%d", id), func(t *testing.T) {
-				pod, err := factory.FileContents(testCase.filename)
-				if err != nil {
-					t.Fatalf("Unexpected error: %s", err)
-				}
-
+			t.Run(testCase.filename, func(t *testing.T) {
+				pod := fileContents(factory, t, testCase.filename)
 				fakeReq := getFakePodReq(pod)
 				fullConf := testCase.conf.
 					WithKind(fakeReq.Kind.Kind).
@@ -133,33 +128,18 @@ func TestGetPodPatch(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Unexpected PatchForAdmissionRequest error: %s", err)
 				}
-				actualPatch, err := unmarshalPatch(patchJSON)
-				if err != nil {
-					t.Fatalf("Unexpected error: %s", err)
-				}
+				actualPatch := unmarshalPatch(t, patchJSON)
 				if diff := deep.Equal(expectedPatch, actualPatch); diff != nil {
 					t.Fatalf("The actual patch didn't match what was expected.\n%+v", diff)
 				}
-
 			})
 		}
 	})
 
 	t.Run("by checking annotations with debug", func(t *testing.T) {
-		expectedPatchBytes, err := factory.FileContents("pod-with-debug.patch.json")
-		if err != nil {
-			t.Fatalf("Unexpected error: %s", err)
-		}
+		_, expectedPatch := loadPatch(factory, t, "pod-with-debug.patch.json")
 
-		expectedPatch, err := unmarshalPatch(expectedPatchBytes)
-		if err != nil {
-			t.Fatalf("Unexpected error: %s", err)
-		}
-
-		pod, err := factory.FileContents("pod-with-debug-enabled.yaml")
-		if err != nil {
-			t.Fatalf("Unexpected error: %s", err)
-		}
+		pod := fileContents(factory, t, "pod-with-debug-enabled.yaml")
 		fakeReq := getFakePodReq(pod)
 		conf := confNsEnabled().WithKind(fakeReq.Kind.Kind).WithOwnerRetriever(ownerRetrieverFake)
 		_, err = conf.ParseMetaAndYAML(fakeReq.Object.Raw)
@@ -171,29 +151,40 @@ func TestGetPodPatch(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Unexpected PatchForAdmissionRequest error: %s", err)
 		}
-		actualPatch, err := unmarshalPatch(patchJSON)
-		if err != nil {
-			t.Fatalf("Unexpected error: %s", err)
+		actualPatch := unmarshalPatch(t, patchJSON)
+		if diff := deep.Equal(expectedPatch, actualPatch); diff != nil {
+			t.Fatalf("The actual patch didn't match what was expected.\n%+v", diff)
 		}
+	})
+
+	t.Run("by configuring log level", func(t *testing.T) {
+		_, expectedPatch := loadPatch(factory, t, "pod-log-level.json")
+
+		pod := fileContents(factory, t, "pod-inject-enabled-log-level.yaml")
+		fakeReq := getFakePodReq(pod)
+		conf := confNsWithoutOpaquePorts().
+			WithKind(fakeReq.Kind.Kind).
+			WithOwnerRetriever(ownerRetrieverFake)
+		_, err = conf.ParseMetaAndYAML(fakeReq.Object.Raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		patchJSON, err := conf.GetPodPatch(true)
+		if err != nil {
+			t.Fatalf("Unexpected PatchForAdmissionRequest error: %s", err)
+		}
+
+		actualPatch := unmarshalPatch(t, patchJSON)
 		if diff := deep.Equal(expectedPatch, actualPatch); diff != nil {
 			t.Fatalf("The actual patch didn't match what was expected.\n%+v", diff)
 		}
 	})
 
 	t.Run("by checking pod inherits config annotations from namespace", func(t *testing.T) {
-		expectedPatchBytes, err := factory.FileContents("pod-with-ns-annotations.patch.json")
-		if err != nil {
-			t.Fatalf("Unexpected error: %s", err)
-		}
-		expectedPatch, err := unmarshalPatch(expectedPatchBytes)
-		if err != nil {
-			t.Fatalf("Unexpected error: %s", err)
-		}
+		_, expectedPatch := loadPatch(factory, t, "pod-with-ns-annotations.patch.json")
 
-		pod, err := factory.FileContents("pod-inject-enabled.yaml")
-		if err != nil {
-			t.Fatalf("Unexpected error: %s", err)
-		}
+		pod := fileContents(factory, t, "pod-inject-enabled.yaml")
 		fakeReq := getFakePodReq(pod)
 		conf := confNsWithConfigAnnotations().
 			WithKind(fakeReq.Kind.Kind).
@@ -205,26 +196,19 @@ func TestGetPodPatch(t *testing.T) {
 
 		// The namespace has two config annotations: one valid and one invalid
 		// the pod patch should only contain the valid annotation.
-		conf.AppendNamespaceAnnotations()
+		inject.AppendNamespaceAnnotations(conf.GetOverrideAnnotations(), conf.GetNsAnnotations(), conf.GetWorkloadAnnotations())
 		patchJSON, err := conf.GetPodPatch(true)
 		if err != nil {
 			t.Fatalf("Unexpected PatchForAdmissionRequest error: %s", err)
 		}
-		actualPatch, err := unmarshalPatch(patchJSON)
-		if err != nil {
-			t.Fatalf("Unexpected error: %s", err)
-		}
+		actualPatch := unmarshalPatch(t, patchJSON)
 		if diff := deep.Equal(expectedPatch, actualPatch); diff != nil {
 			t.Fatalf("The actual patch didn't match what was expected.\n+%v", diff)
 		}
 	})
 
 	t.Run("by checking container spec", func(t *testing.T) {
-		deployment, err := factory.FileContents("deployment-with-injected-proxy.yaml")
-		if err != nil {
-			t.Fatalf("Unexpected error: %s", err)
-		}
-
+		deployment := fileContents(factory, t, "deployment-with-injected-proxy.yaml")
 		fakeReq := getFakePodReq(deployment)
 		conf := confNsDisabled().WithKind(fakeReq.Kind.Kind)
 		patchJSON, err := conf.GetPodPatch(true)
@@ -249,38 +233,10 @@ func TestGetAnnotationPatch(t *testing.T) {
 		t.Fatalf("Unexpected error: %s", err)
 	}
 	t.Run("by checking patch annotations", func(t *testing.T) {
-		servicePatchBytes, err := factory.FileContents("annotation.patch.json")
-		if err != nil {
-			t.Fatalf("Unexpected error: %s", err)
-		}
-		servicePatch, err := unmarshalPatch(servicePatchBytes)
-		if err != nil {
-			t.Fatalf("Unexpected error: %s", err)
-		}
-		podPatchBytes, err := factory.FileContents("annotation.patch.json")
-		if err != nil {
-			t.Fatalf("Unexpected error: %s", err)
-		}
-		podPatch, err := unmarshalPatch(podPatchBytes)
-		if err != nil {
-			t.Fatalf("Unexpected error: %s", err)
-		}
-		filteredServiceBytes, err := factory.FileContents("filtered-service-opaque-ports.json")
-		if err != nil {
-			t.Fatalf("Unexpected error: %s", err)
-		}
-		filteredServicePatch, err := unmarshalPatch(filteredServiceBytes)
-		if err != nil {
-			t.Fatalf("Unexpected error: %s", err)
-		}
-		filteredPodBytes, err := factory.FileContents("filtered-pod-opaque-ports.json")
-		if err != nil {
-			t.Fatalf("Unexpected error: %s", err)
-		}
-		filteredPodPatch, err := unmarshalPatch(filteredPodBytes)
-		if err != nil {
-			t.Fatalf("Unexpected error: %s", err)
-		}
+		servicePatchBytes, servicePatch := loadPatch(factory, t, "annotation.patch.json")
+		podPatchBytes, podPatch := loadPatch(factory, t, "annotation.patch.json")
+		filteredServiceBytes, filteredServicePatch := loadPatch(factory, t, "filtered-service-opaque-ports.json")
+		filteredPodBytes, filteredPodPatch := loadPatch(factory, t, "filtered-pod-opaque-ports.json")
 		var testCases = []struct {
 			name               string
 			filename           string
@@ -361,10 +317,7 @@ func TestGetAnnotationPatch(t *testing.T) {
 		for _, testCase := range testCases {
 			testCase := testCase // pin
 			t.Run(testCase.name, func(t *testing.T) {
-				service, err := factory.FileContents(testCase.filename)
-				if err != nil {
-					t.Fatalf("Unexpected error: %s", err)
-				}
+				service := fileContents(factory, t, testCase.filename)
 				fakeReq := getFakeServiceReq(service)
 				fullConf := testCase.conf.
 					WithKind(fakeReq.Kind.Kind).
@@ -385,10 +338,7 @@ func TestGetAnnotationPatch(t *testing.T) {
 				if len(testCase.expectedPatchBytes) == 0 {
 					return
 				}
-				actualPatch, err := unmarshalPatch(patchJSON)
-				if err != nil {
-					t.Fatalf("Unexpected error: %s", err)
-				}
+				actualPatch := unmarshalPatch(t, patchJSON)
 				if diff := deep.Equal(testCase.expectedPatch, actualPatch); diff != nil {
 					t.Fatalf("The actual patch didn't match what was expected.\n%+v", diff)
 				}
@@ -415,16 +365,31 @@ func getFakeServiceReq(b []byte) *admissionv1beta1.AdmissionRequest {
 	}
 }
 
-func ownerRetrieverFake(p *v1.Pod) (string, string) {
-	return pkgK8s.Deployment, "owner-deployment"
+func ownerRetrieverFake(p *corev1.Pod) (string, string, error) {
+	return pkgK8s.Deployment, "owner-deployment", nil
 }
 
-func unmarshalPatch(patchJSON []byte) (unmarshalledPatch, error) {
-	var actualPatch unmarshalledPatch
-	err := json.Unmarshal(patchJSON, &actualPatch)
-	if err != nil {
-		return nil, err
-	}
+func loadPatch(factory *fake.Factory, t *testing.T, name string) ([]byte, unmarshalledPatch) {
+	t.Helper()
+	bytes := fileContents(factory, t, name)
+	patch := unmarshalPatch(t, bytes)
+	return bytes, patch
+}
 
-	return actualPatch, nil
+func fileContents(factory *fake.Factory, t *testing.T, name string) []byte {
+	t.Helper()
+	b, err := factory.FileContents(name)
+	if err != nil {
+		t.Fatalf("Unexpected error: %s", err)
+	}
+	return b
+}
+
+func unmarshalPatch(t *testing.T, patchJSON []byte) unmarshalledPatch {
+	t.Helper()
+	var actualPatch unmarshalledPatch
+	if err := json.Unmarshal(patchJSON, &actualPatch); err != nil {
+		t.Fatalf("Unexpected error: %s", err)
+	}
+	return actualPatch
 }

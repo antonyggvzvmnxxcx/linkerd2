@@ -7,11 +7,12 @@ kind: ConfigMap
 apiVersion: v1
 metadata:
   name: prometheus-config
-  {{ include "partials.namespace" . }}
+  namespace: {{ .Release.Namespace }}
   labels:
     linkerd.io/extension: viz
     component: prometheus
     namespace: {{.Release.Namespace}}
+    {{- with .Values.commonLabels }}{{ toYaml . | trim | nindent 4 }}{{- end }}
   annotations:
     {{ include "partials.annotations.created-by" . }}
 data:
@@ -136,6 +137,10 @@ data:
       # Copy tmp labels into real labels
       - action: labelmap
         regex: __tmp_pod_label_(.+)
+      {{- if .Values.prometheus.metricRelabelConfigs }}
+      metric_relabel_configs:
+      {{- toYaml .Values.prometheus.metricRelabelConfigs | trim | nindent 6 }}
+      {{- end}}
 
     {{- if .Values.prometheus.scrapeConfigs }}
     {{- toYaml .Values.prometheus.scrapeConfigs | trim | nindent 4 }}
@@ -155,18 +160,19 @@ data:
 
     {{- if .Values.prometheus.remoteWrite }}
     remote_write:
-      {{- toYaml .Values.prometheus.remoteWrite | trim | nindent 4 }}
+      {{- toYaml .Values.prometheus.remoteWrite | trim | nindent 6 }}
     {{- end }}
 ---
 kind: Service
 apiVersion: v1
 metadata:
   name: prometheus
-  {{ include "partials.namespace" . }}
+  namespace: {{ .Release.Namespace }}
   labels:
     linkerd.io/extension: viz
     component: prometheus
     namespace: {{.Release.Namespace}}
+    {{- with .Values.commonLabels }}{{ toYaml . | trim | nindent 4 }}{{- end }}
   annotations:
     {{ include "partials.annotations.created-by" . }}
     linkerd.io/inject: enabled
@@ -194,10 +200,12 @@ metadata:
     app.kubernetes.io/version: {{default .Values.linkerdVersion .Values.cliVersion}}
     component: prometheus
     namespace: {{.Release.Namespace}}
+    {{- with .Values.commonLabels }}{{ toYaml . | trim | nindent 4 }}{{- end }}
   name: prometheus
-  {{ include "partials.namespace" . }}
+  namespace: {{ .Release.Namespace }}
 spec:
   replicas: 1
+  revisionHistoryLimit: {{.Values.revisionHistoryLimit}}
   {{- if .Values.prometheus.persistence }}
   strategy:
     type: Recreate
@@ -215,7 +223,9 @@ spec:
         {{- include "partials.proxy.config.annotations" .resources | nindent 8 }}
         {{- end }}
         {{- with .Values.podAnnotations }}{{ toYaml . | trim | nindent 8 }}{{- end }}
+        {{- with .Values.prometheus.podAnnotations }}{{ toYaml . | trim | nindent 8 }}{{- end }}
         linkerd.io/inject: enabled
+        config.alpha.linkerd.io/proxy-wait-before-exit-seconds: "0"
       labels:
         linkerd.io/extension: viz
         component: prometheus
@@ -226,8 +236,7 @@ spec:
       {{- include "linkerd.tolerations" (dict "Values" .Values.prometheus) | nindent 6 }}
       {{- end -}}
       {{- include "linkerd.node-selector" (dict "Values" .Values.prometheus) | nindent 6 }}
-      securityContext:
-        fsGroup: 65534
+      automountServiceAccountToken: false
       containers:
       {{- if .Values.prometheus.sidecarContainers -}}
       {{- toYaml .Values.prometheus.sidecarContainers | trim | nindent 6 }}
@@ -264,9 +273,16 @@ spec:
         {{- include "partials.resources" .Values.prometheus.resources | nindent 8 }}
         {{- end }}
         securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsGroup: 65534
           runAsNonRoot: true
           runAsUser: 65534
-          runAsGroup: 65534
+          seccompProfile:
+            type: RuntimeDefault
         volumeMounts:
       {{- range .Values.prometheus.ruleConfigMapMounts }}
         - name: {{ .name }}
@@ -280,6 +296,13 @@ spec:
           name: prometheus-config
           subPath: prometheus.yml
           readOnly: true
+        - mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+          name: kube-api-access
+          readOnly: true
+      securityContext:
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
       serviceAccountName: prometheus
       volumes:
     {{- range .Values.prometheus.ruleConfigMapMounts }}
@@ -297,6 +320,7 @@ spec:
       - configMap:
           name: prometheus-config
         name: prometheus-config
+      - {{- include "partials.volumes.manual-mount-service-account-token" . | indent 8 | trimPrefix (repeat 7 " ") }}
 {{- if .Values.prometheus.persistence }}
 ---
 kind: PersistentVolumeClaim
@@ -308,8 +332,9 @@ metadata:
     app.kubernetes.io/part-of: Linkerd
     app.kubernetes.io/version: {{default .Values.linkerdVersion}}
     component: prometheus
+    {{- with .Values.commonLabels }}{{ toYaml . | trim | nindent 4 }}{{- end }}
   name: prometheus
-  {{ include "partials.namespace" . }}
+  namespace: {{ .Release.Namespace }}
 spec:
   accessModes:
     - {{ .Values.prometheus.persistence.accessMode | quote }}

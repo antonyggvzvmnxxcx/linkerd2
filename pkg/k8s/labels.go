@@ -8,6 +8,7 @@ package k8s
 import (
 	"fmt"
 
+	ewv1beta1 "github.com/linkerd/linkerd2/controller/gen/apis/externalworkload/v1beta1"
 	"github.com/linkerd/linkerd2/pkg/version"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -112,6 +113,10 @@ const (
 	// disable injection for a pod or namespace.
 	ProxyInjectDisabled = Disabled
 
+	// ProxyTrustRootSHA indicates the cert bundle configured on the injected
+	// workload.
+	ProxyTrustRootSHA = Prefix + "/trust-root-sha256"
+
 	/*
 	 * Proxy config annotations
 	 */
@@ -201,8 +206,18 @@ const (
 	// ProxyUIDAnnotation can be used to override the UID config.
 	ProxyUIDAnnotation = ProxyConfigAnnotationsPrefix + "/proxy-uid"
 
+	// ProxyGIDAnnotation can be used to override the GID config.
+	ProxyGIDAnnotation = ProxyConfigAnnotationsPrefix + "/proxy-gid"
+
+	// ProxyAdminShutdownAnnotation can be used to override the
+	// LINKERD2_PROXY_SHUTDOWN_ENDPOINT_ENABLED config.
+	ProxyAdminShutdownAnnotation = ProxyConfigAnnotationsPrefix + "/proxy-admin-shutdown"
+
 	// ProxyLogLevelAnnotation can be used to override the log level config.
 	ProxyLogLevelAnnotation = ProxyConfigAnnotationsPrefix + "/proxy-log-level"
+
+	// ProxyLogHTTPHeaders can be used to override if the proxy is permitted to log HTTP headers.
+	ProxyLogHTTPHeaders = ProxyConfigAnnotationsPrefix + "/proxy-log-http-headers"
 
 	// ProxyLogFormatAnnotation can be used to override the log format config.
 	ProxyLogFormatAnnotation = ProxyConfigAnnotationsPrefix + "/proxy-log-format"
@@ -226,6 +241,24 @@ const (
 	// timeout in the proxy
 	ProxyInboundConnectTimeout = ProxyConfigAnnotationsPrefix + "/proxy-inbound-connect-timeout"
 
+	// ProxyOutboundDiscoveryCacheTimeout can be used to configure the timeout
+	// that will evict unused outbound discovery results
+	ProxyOutboundDiscoveryCacheUnusedTimeout = ProxyConfigAnnotationsPrefix + "/proxy-outbound-discovery-cache-unused-timeout"
+
+	// ProxyInboundDiscoveryCacheUnusedTimeout can be used to configure the timeout
+	// that will evict unused inbound discovery results
+	ProxyInboundDiscoveryCacheUnusedTimeout = ProxyConfigAnnotationsPrefix + "/proxy-inbound-discovery-cache-unused-timeout"
+
+	// ProxyDisableOutboundProtocolDetectTimeout can be used to disable protocol
+	// detection timeouts for outbound connections by setting them to a very
+	// high value.
+	ProxyDisableOutboundProtocolDetectTimeout = ProxyConfigAnnotationsPrefix + "/proxy-disable-outbound-protocol-detect-timeout"
+
+	// ProxyDisableInboundProtocolDetectTimeout can be used to disable protocol
+	// detection timeouts for inbound connections by setting them to a very
+	// high value.
+	ProxyDisableInboundProtocolDetectTimeout = ProxyConfigAnnotationsPrefix + "/proxy-disable-inbound-protocol-detect-timeout"
+
 	// ProxyEnableGatewayAnnotation can be used to configure the proxy
 	// to operate as a gateway, routing requests that target the inbound router.
 	ProxyEnableGatewayAnnotation = ProxyConfigAnnotationsPrefix + "/enable-gateway"
@@ -241,6 +274,9 @@ const (
 	// after the Pod entered the Terminating state. Must be smaller than terminationGracePeriodSeconds
 	// configured for the Pod
 	ProxyWaitBeforeExitSecondsAnnotation = ProxyConfigAnnotationsPrefixAlpha + "/proxy-wait-before-exit-seconds"
+
+	// ProxyEnableNativeSidecarAnnotation enables the new native initContainer sidecar
+	ProxyEnableNativeSidecarAnnotation = ProxyConfigAnnotationsPrefixAlpha + "/proxy-enable-native-sidecar"
 
 	// ProxyAwait can be used to force the application to wait for the proxy
 	// to be ready.
@@ -270,6 +306,14 @@ const (
 
 	// Deny denies all connections.
 	Deny = "deny"
+
+	// Audit allows all connections, but logs and emits audit metrics whenever
+	// the default policy is enacted
+	Audit = "audit"
+
+	// ProxyShutdownGracePeriodAnnotation configures the grace period for
+	// graceful shutdowns in the proxy.
+	ProxyShutdownGracePeriodAnnotation = ProxyConfigAnnotationsPrefix + "/shutdown-grace-period"
 
 	/*
 	 * Component Names
@@ -338,9 +382,6 @@ const (
 	// PolicyValidatorWebhookConfigName is the name of the validating webhook configuration
 	PolicyValidatorWebhookConfigName = "linkerd-policy-validator-webhook-config"
 
-	// AdmissionWebhookLabel indicates whether admission webhooks are enabled for a namespace
-	AdmissionWebhookLabel = ProxyConfigAnnotationsPrefix + "/admission-webhooks"
-
 	/*
 	 * Mount paths
 	 */
@@ -378,6 +419,10 @@ const (
 	// and types used by the service mirror component
 	SvcMirrorPrefix = "mirror.linkerd.io"
 
+	// MulticlusterPrefix is the prefix common to all labels and annotations
+	// used for multicluster services.
+	MulticlusterPrefix = "multicluster.linkerd.io"
+
 	// MirrorSecretType is the type of secret that is supposed to contain
 	// the access information for remote clusters.
 	MirrorSecretType = SvcMirrorPrefix + "/remote-kubeconfig"
@@ -385,6 +430,10 @@ const (
 	// DefaultExportedServiceSelector is the default label selector for exported
 	// services.
 	DefaultExportedServiceSelector = SvcMirrorPrefix + "/exported"
+
+	// DefaultFederatedServiceSelector is the default label selector for
+	// federated services.
+	DefaultFederatedServiceSelector = SvcMirrorPrefix + "/federated"
 
 	// MirroredResourceLabel indicates that this resource is the result
 	// of a mirroring operation (can be a namespace or a service)
@@ -401,6 +450,26 @@ const (
 	// allows us to associate a mirrored service with a remote cluster
 	RemoteClusterNameLabel = SvcMirrorPrefix + "/cluster-name"
 
+	// RemoteDiscoveryLabel indicates that this service is a remote discovery
+	// service and the value of this label is the name of the remote cluster.
+	RemoteDiscoveryLabel = MulticlusterPrefix + "/remote-discovery"
+
+	// RemoteServiceLabel is the name of the service in the remote cluster.
+	RemoteServiceLabel = MulticlusterPrefix + "/remote-service"
+
+	// RemoteDiscoveryAnnotation indicates that this service is a remote discovery
+	// service and the value of this label is a comma-separated list of remote
+	// discovery targets of the form <service>@<cluster>. This can be used in
+	// conjunction with LocalDiscoveryAnnotation and the endpoints will be
+	// unioned.
+	RemoteDiscoveryAnnotation = MulticlusterPrefix + "/remote-discovery"
+
+	// LocalDiscoveryAnnotation indicates that service discovery information for
+	// this service should be fetched from another service in the local cluster
+	// instead of the target service itself. This can be used in conjunction
+	// with RemoteDiscoveryAnnotation and the endpoints will be unioned.
+	LocalDiscoveryAnnotation = MulticlusterPrefix + "/local-discovery"
+
 	// RemoteResourceVersionAnnotation is the last observed remote resource
 	// version of a mirrored resource. Useful when doing updates
 	RemoteResourceVersionAnnotation = SvcMirrorPrefix + "/remote-resource-version"
@@ -415,11 +484,17 @@ const (
 	// GatewayIdentity can be found on the remote gateway service
 	GatewayIdentity = SvcMirrorPrefix + "/gateway-identity"
 
+	// GatewayProbeFailureThreshold is the minimum consecutive failures for the probe to be considered failed
+	GatewayProbeFailureThreshold = SvcMirrorPrefix + "/probe-failure-threshold"
+
 	// GatewayProbePeriod the interval at which the health of the gateway should be probed
 	GatewayProbePeriod = SvcMirrorPrefix + "/probe-period"
 
 	// GatewayProbePath the path at which the health of the gateway should be probed
 	GatewayProbePath = SvcMirrorPrefix + "/probe-path"
+
+	// GatewayProbeTimeout is the probe request timeout
+	GatewayProbeTimeout = SvcMirrorPrefix + "/probe-timeout"
 
 	// ConfigKeyName is the key in the secret that stores the kubeconfig needed to connect
 	// to a remote cluster
@@ -470,6 +545,16 @@ func GetPodLabels(ownerKind, ownerName string, pod *corev1.Pod) map[string]strin
 		labels["pod_template_hash"] = pth
 	}
 
+	return labels
+}
+
+// GetExternalWorkloadLabels returns the set of prometheus owner labels for a given ExternalWorkload
+func GetExternalWorkloadLabels(ownerKind, ownerName string, ew *ewv1beta1.ExternalWorkload) map[string]string {
+	labels := map[string]string{"external_workload": ew.Name}
+
+	if ownerKind != "" && ownerName != "" {
+		labels[ownerKind] = ownerName
+	}
 	return labels
 }
 

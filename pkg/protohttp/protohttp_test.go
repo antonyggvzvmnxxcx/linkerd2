@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -187,7 +187,7 @@ func TestWriteErrorToHttpResponse(t *testing.T) {
 
 		responseWriter := newStubResponseWriter()
 		expectedErrorMessage := "error message"
-		grpcError := status.Errorf(codes.AlreadyExists, expectedErrorMessage)
+		grpcError := status.Error(codes.AlreadyExists, expectedErrorMessage)
 
 		WriteErrorToHTTPResponse(responseWriter, grpcError)
 
@@ -363,7 +363,7 @@ func TestCheckIfResponseHasError(t *testing.T) {
 		message := SerializeAsPayload(protoInBytes)
 		response := &http.Response{
 			Header:     make(http.Header),
-			Body:       ioutil.NopCloser(bytes.NewReader(message)),
+			Body:       io.NopCloser(bytes.NewReader(message)),
 			StatusCode: http.StatusInternalServerError,
 		}
 		response.Header.Set(errorHeader, "error")
@@ -394,7 +394,7 @@ func TestCheckIfResponseHasError(t *testing.T) {
 
 		response := &http.Response{
 			Header:     make(http.Header),
-			Body:       ioutil.NopCloser(bytes.NewReader(j)),
+			Body:       io.NopCloser(bytes.NewReader(j)),
 			StatusCode: http.StatusForbidden,
 			Status:     "403 Forbidden",
 		}

@@ -288,6 +288,15 @@ func (h *KubernetesHelper) GetService(ctx context.Context, namespace string, ser
 	return service, nil
 }
 
+// GetEndpoints gets endpoints that exist in a namespace.
+func (h *KubernetesHelper) GetEndpoints(ctx context.Context, namespace string, serviceName string) (*corev1.Endpoints, error) {
+	ep, err := h.clientset.CoreV1().Endpoints(namespace).Get(ctx, serviceName, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+	return ep, nil
+}
+
 // GetPods returns all pods with the given labels
 func (h *KubernetesHelper) GetPods(ctx context.Context, namespace string, podLabels map[string]string) ([]corev1.Pod, error) {
 	podList, err := h.clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
@@ -360,6 +369,7 @@ func (h *KubernetesHelper) URLFor(ctx context.Context, namespace, deployName str
 // WaitRollout blocks until all the given deployments have been completely
 // rolled out (and their pods are ready)
 func (h *KubernetesHelper) WaitRollout(t *testing.T, deploys map[string]DeploySpec) {
+	t.Helper()
 	// Use default context
 	h.WaitRolloutWithContext(t, deploys, h.k8sContext)
 }
@@ -367,13 +377,16 @@ func (h *KubernetesHelper) WaitRollout(t *testing.T, deploys map[string]DeploySp
 // WaitRolloutWithContext blocks until all the given deployments in a provided
 // k8s context have been completely rolled out (and their pods are ready)
 func (h *KubernetesHelper) WaitRolloutWithContext(t *testing.T, deploys map[string]DeploySpec, context string) {
+	t.Helper()
 	for deploy, deploySpec := range deploys {
-		o, err := h.KubectlWithContext("", context, "--namespace="+deploySpec.Namespace, "rollout", "status", "--timeout=60m", "deploy/"+deploy)
+		stat, err := h.KubectlWithContext("", context, "--namespace="+deploySpec.Namespace,
+			"rollout", "status", "--timeout=5m", "deploy/"+deploy)
 		if err != nil {
-			oEvt, _ := h.KubectlWithContext("", context, "--namespace="+deploySpec.Namespace, "get", "event", "--field-selector", "involvedObject.name="+deploy)
+			desc, _ := h.KubectlWithContext("", context, "--namespace="+deploySpec.Namespace,
+				"describe", "po")
 			AnnotatedFatalf(t,
 				fmt.Sprintf("failed to wait rollout of deploy/%s", deploy),
-				"failed to wait for rollout of deploy/%s: %s: %s\nEvents:\n%s", deploy, err, o, oEvt)
+				"failed to wait for rollout of deploy/%s: %s: %s\n---\n%s", deploy, err, stat, desc)
 		}
 	}
 }

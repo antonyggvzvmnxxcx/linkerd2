@@ -4,20 +4,28 @@
 # proper messages
 set +e
 
+k8s_version_min='+v1.22'
+k8s_version_max='docker.io/rancher/k3s:v1.29.6-k3s2'
+
+bindir=$( cd "${BASH_SOURCE[0]%/*}" && pwd )
+testdir=$bindir/../test/integration
+
 ##### Test setup helpers #####
 
-export default_test_names=(deep viz external helm-upgrade uninstall upgrade-edge upgrade-stable default-policy-deny)
+export default_test_names=(deep deep-native-sidecar viz external helm-upgrade uninstall upgrade-edge default-policy-deny rsa-ca)
 export external_resource_test_names=(external-resources)
-export all_test_names=(cluster-domain cni-calico-deep multicluster "${default_test_names[*]}" "${external_resource_test_names[*]}")
+# TODO(alpeb): add test cni-calico-deep-dual-stack
+export dual_stack_test_names=(deep-dual-stack)
+export all_test_names=(cluster-domain cni-calico-deep multicluster "${default_test_names[*]}" "${external_resource_test_names[*]}" "${dual_stack_test_names[*]}")
 images_load_default=(proxy controller policy-controller web metrics-api tap)
 
 tests_usage() {
-  progname="${0##*/}"
+  progname=${0##*/}
   echo "Run Linkerd integration tests.
 
 Optionally specify a test with the --name flag: [${all_test_names[*]}]
 
-Note: The cluster-domain, cni-calico-deep and multicluster tests require a custom cluster configuration (see bin/_test-helpers.sh)
+Note: The cluster-domain, deep-native-sidecar cni-calico-deep and multicluster tests require a custom cluster configuration (see bin/_test-helpers.sh)
 
 Usage:
     ${progname} [--images docker|archive|skip] [--name test-name] [--skip-cluster-create] /path/to/linkerd
@@ -48,7 +56,7 @@ Available Commands:
 }
 
 cleanup_usage() {
-  progname="${0##*/}"
+  progname=${0##*/}
   echo "Cleanup Linkerd integration tests.
 
 Usage:
@@ -68,7 +76,7 @@ handle_tests_input() {
   export skip_cluster_create=''
   export skip_cluster_delete=''
   export cleanup_docker=''
-  export linkerd_path=""
+  export linkerd_path=''
 
   while  [ $# -ne 0 ]; do
     case $1 in
@@ -126,7 +134,7 @@ handle_tests_input() {
           tests_usage "$0" >&2
           exit 64
         fi
-        linkerd_path=$1
+        linkerd_path=$(realpath "$1")
         shift
         ;;
     esac
@@ -186,21 +194,8 @@ handle_cleanup_input() {
   fi
 }
 
-test_setup() {
-  bindir=$( cd "${BASH_SOURCE[0]%/*}" && pwd )
-  export bindir
-
-  export test_directory="$bindir"/../test/integration
-
-  check_linkerd_binary
-}
-
 check_linkerd_binary() {
   printf 'Checking the linkerd binary...'
-  if [[ "$linkerd_path" != /* ]]; then
-    printf '\n[%s] is not an absolute path\n' "$linkerd_path"
-    exit 1
-  fi
   if [ ! -x "$linkerd_path" ]; then
     printf '\n[%s] does not exist or is not executable\n' "$linkerd_path"
     exit 1
@@ -232,11 +227,11 @@ cleanup_cluster() {
 
 setup_min_cluster() {
   local name=$1
-  export helm_path="$bindir"/helm
+  export helm_path=$bindir/helm
 
-  test_setup
+  check_linkerd_binary
   if [ -z "$skip_cluster_create" ]; then
-    "$bindir"/k3d cluster create "$@" --image +v1.20
+    "$bindir"/k3d cluster create "$@" --image "$k8s_version_min"
     image_load "$name"
   fi
   check_cluster
@@ -244,9 +239,9 @@ setup_min_cluster() {
 
 setup_cluster() {
   local name=$1
-  export helm_path="$bindir"/helm
+  export helm_path=$bindir/helm
 
-  test_setup
+  check_linkerd_binary
   if [ -z "$skip_cluster_create" ]; then
     "$bindir"/k3d cluster create "$@"
     image_load "$name"
@@ -296,9 +291,6 @@ image_load() {
   if [[ "$cluster_name" = *viz ]]; then
     images_load+=(jaeger-webhook)
   fi
-  if [ "$cluster_name" = "cni-calico-deep" ]; then
-    images_load+=(cni-plugin)
-  fi
   case $images in
     docker)
       "$bindir"/image-load --k3d --cluster "$cluster_name" "${images_load[@]}"
@@ -321,16 +313,20 @@ start_test() {
 
   case $name in
     cluster-domain)
-      config=("$name" "${config[@]}" --no-lb --k3s-arg --cluster-domain=custom.domain --k3s-arg '--disable=servicelb,traefik@server:0')
+      config=("$name" "${config[@]}" --no-lb --k3s-arg --cluster-domain=custom.domain --k3s-arg '--disable=servicelb,traefik@server:0' --image "$k8s_version_max")
       ;;
     cni-calico-deep)
-      config=("$name" "${config[@]}" --no-lb --k3s-arg --write-kubeconfig-mode=644 --k3s-arg --flannel-backend=none --k3s-arg --cluster-cidr=192.168.0.0/16 --k3s-arg '--disable=servicelb,traefik@server:0')
+      # This requires k8s v1.27.6-k3s1 because after that Calico won't work.
+      # We have to use a config file because that version can't be set via the
+      # --image flag.
+      # See https://github.com/k3d-io/k3d/issues/1375
+      config=("$name" "${config[@]}" --no-lb --k3s-arg --write-kubeconfig-mode=644 --k3s-arg --flannel-backend=none --k3s-arg --cluster-cidr=192.168.0.0/16 --k3s-arg '--disable=servicelb,traefik@server:0' --config "$testdir"/deep/calico-k3d.yml)
       ;;
     multicluster)
-      config=("${config[@]}" --network multicluster-test)
+      config=("${config[@]}" --network multicluster-test --image "$k8s_version_max")
       ;;
     *)
-      config=("$name" "${config[@]}" --no-lb --k3s-arg '--disable=servicelb,traefik@server:0')
+      config=("$name" "${config[@]}" --no-lb --k3s-arg '--disable=servicelb,traefik@server:0' --image "$k8s_version_max")
       ;;
   esac
 
@@ -378,7 +374,7 @@ run_test(){
 
   printf 'Test script: [%s] Params: [%s]\n' "${filename##*/}" "$*"
   # Exit on failure here
-  GO111MODULE=on go test -test.timeout=60m --failfast --mod=readonly "$filename" --linkerd="$linkerd_path" --helm-path="$helm_path" --default-allow-policy="$default_allow_policy" --k8s-context="$context" --integration-tests "$@" || exit 1
+  GO111MODULE=on go test -v -test.timeout=60m --failfast --mod=readonly "$filename" --linkerd="$linkerd_path" --helm-path="$helm_path" --default-inbound-policy="$default_inbound_policy" --k8s-context="$context" --integration-tests "$@" || exit 1
 }
 
 # Returns the latest version for the release channel
@@ -390,17 +386,11 @@ latest_release_channel() {
 # Run the upgrade-edge test by upgrading the most-recent edge release to the
 # HEAD of this branch.
 run_upgrade-edge_test() {
-  run_test "$test_directory/upgrade-edge/..." 
-}
-
-# Run the upgrade-stable test by upgrading the most-recent stable release to the
-# HEAD of this branch.
-run_upgrade-stable_test() {
-  run_test "$test_directory/upgrade-stable/..." 
+  run_test "$testdir/upgrade-edge/..."
 }
 
 run_viz_test() {
-  run_test "$test_directory/viz/..."
+  run_test "$testdir/viz/..."
 }
 
 setup_helm() {
@@ -410,70 +400,79 @@ setup_helm() {
   export helm_release_name='helm-test'
   export helm_multicluster_release_name='multicluster-test'
   "$bindir"/helm-build
-  "$helm_path" --kube-context="$context" repo add linkerd https://helm.linkerd.io/stable
+  "$helm_path" --kube-context="$context" repo add linkerd https://helm.linkerd.io/edge
   exit_on_err 'error setting up Helm'
 }
 
 helm_cleanup() {
   (
     set -e
-    "$helm_path" --kube-context="$context" --namespace linkerd delete "$helm_release_name-crds" || true
+   "$helm_path" --kube-context="$context" --namespace linkerd-multicluster delete "$helm_multicluster_release_name" || true
+    kubectl delete ns/linkerd-multicluster || true
+    "$helm_path" --kube-context="$context" --namespace linkerd-viz delete "$helm_release_name-l5d-viz" || true
+    kubectl delete ns/linkerd-viz || true
     "$helm_path" --kube-context="$context" --namespace linkerd delete "$helm_release_name-control-plane" || true
+    "$helm_path" --kube-context="$context" --namespace linkerd delete "$helm_release_name-crds" || true
     kubectl delete ns/linkerd
-    "$helm_path" --kube-context="$context" --namespace linkerd-multicluster delete "$helm_multicluster_release_name" || true
-    kubectl delete ns/linkerd-multicluster
-    # We wait for the namespace to be gone so the following call to `cleanup` doesn't fail when it attempts to delete
-    # the same namespace that is already being deleted here (error thrown by the NamespaceLifecycle controller).
-    # We don't have that problem with global resources, so no need to wait for them to be gone.
-    kubectl wait --for=delete ns/linkerd --timeout=120s || true
-    kubectl wait --for=delete ns/linkerd-multicluster --timeout=120s || true
   )
   exit_on_err 'error cleaning up Helm'
 }
 
 run_helm-upgrade_test() {
-  local stable_version
-  stable_version=$(latest_release_channel 'stable')
+  local edge_version
+  edge_version=$(latest_release_channel 'edge')
 
-  if [ -z "$stable_version" ]; then
-    echo 'error getting stable_version'
+  if [ -z "$edge_version" ]; then
+    echo 'error getting edge_version'
     exit 1
   fi
 
   setup_helm
-  helm_viz_chart="$( cd "$bindir"/.. && pwd )"/viz/charts/linkerd-viz
-  run_test "$test_directory/install/install_test.go" --helm-path="$helm_path" --helm-charts="$helm_charts" \
-  --viz-helm-chart="$helm_viz_chart" --helm-stable-chart='linkerd/linkerd2' --viz-helm-stable-chart="linkerd/linkerd-viz" --helm-release="$helm_release_name" --upgrade-helm-from-version="$stable_version"
+  helm_viz_chart=$( cd "$bindir"/.. && pwd )/viz/charts/linkerd-viz
+  run_test "$testdir/install/install_test.go" --helm-path="$helm_path" --helm-charts="$helm_charts" \
+  --viz-helm-chart="$helm_viz_chart" --viz-helm-stable-chart="linkerd/linkerd-viz" --helm-release="$helm_release_name" --upgrade-helm-from-version="$edge_version"
   helm_cleanup
 }
 
 run_uninstall_test() {
-  run_test "$test_directory/install/uninstall/uninstall_test.go" --uninstall=true
+  run_test "$testdir/install/uninstall/uninstall_test.go" --uninstall=true
 }
 
 run_multicluster_test() {
-   run_test "$test_directory/multicluster/..." 
+   run_test "$testdir/multicluster/..."
 }
 
 run_deep_test() {
-  run_test "$test_directory/deep/..."
+  run_test "$testdir/deep/..."
+}
+
+run_deep-native-sidecar_test() {
+  run_test "$testdir/deep/..." --native-sidecar
+}
+
+run_deep-dual-stack_test() {
+  run_test "$testdir/deep/..." --dual-stack
 }
 
 run_default-policy-deny_test() {
-  export default_allow_policy='deny'
-  run_test "$test_directory/install/install_test.go" 
+  export default_inbound_policy='deny'
+  run_test "$testdir/install/..."
 }
 
 run_cni-calico-deep_test() {
-  run_test "$test_directory/deep/..." --cni
+  run_test "$testdir/deep/..." --cni
+}
+
+run_rsa-ca_test() {
+  run_test "$testdir/rsa-ca/..."
 }
 
 run_external_test() {
-  run_test "$test_directory/external/..."
+  run_test "$testdir/external/..."
 }
 
 run_cluster-domain_test() {
-  run_test "$test_directory/install/install_test.go" --cluster-domain='custom.domain' 
+  run_test "$testdir/install/..." --cluster-domain='custom.domain'
 }
 
 # exit_on_err should be called right after a command to check the result status

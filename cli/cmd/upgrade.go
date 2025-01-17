@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/linkerd/linkerd2/cli/flag"
-	charts "github.com/linkerd/linkerd2/pkg/charts/linkerd2"
 	l5dcharts "github.com/linkerd/linkerd2/pkg/charts/linkerd2"
 	"github.com/linkerd/linkerd2/pkg/config"
 	flagspkg "github.com/linkerd/linkerd2/pkg/flags"
@@ -55,6 +54,8 @@ func newCmdUpgrade() *cobra.Command {
 
 	var crds bool
 	var options valuespkg.Options
+	var output string
+
 	installUpgradeFlags, installUpgradeFlagSet, err := makeInstallUpgradeFlags(values)
 	if err != nil {
 		fmt.Fprint(os.Stderr, err.Error())
@@ -80,32 +81,30 @@ A full list of configurable values can be found at https://www.github.com/linker
 `,
 
 		Example: `  # Upgrade CRDs first
-  linkerd upgrade --crds | kubectl apply --prune --prune-whitelist=apiextensions.k8s.io/v1/customresourcedefinitions
+  linkerd upgrade --crds | kubectl apply -f -
 
-  # Then upgrade the controle-plane and remove linkerd resources that no longer exist in the current version
-  linkerd upgrade | kubectl apply --prune -l linkerd.io/control-plane-ns=linkerd -f -
+  # Then upgrade the control plane
+  linkerd upgrade | kubectl apply -f -
 
-  # Then run this again to make sure that certain cluster-scoped resources are correctly pruned
-  linkerd upgrade | kubectl apply --prune -l linkerd.io/control-plane-ns=linkerd \
-  --prune-whitelist=rbac.authorization.k8s.io/v1/clusterrole \
-  --prune-whitelist=rbac.authorization.k8s.io/v1/clusterrolebinding \
-  --prune-whitelist=apiregistration.k8s.io/v1/apiservice -f -`,
+  # And lastly, remove linkerd resources that no longer exist in the current version
+  linkerd prune | kubectl delete -f -`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if crds {
 				// The CRD chart is not configurable.
 				// TODO(ver): Error if values have been configured?
-				if _, err := upgradeCRDs().WriteTo(os.Stdout); err != nil {
+				if _, err := upgradeCRDs(options, output).WriteTo(os.Stdout); err != nil {
 					fmt.Fprintln(os.Stderr, err.Error())
 					os.Exit(1)
 				}
 				return nil
 			}
 
-			k, err := k8sClient(manifests)
+			k, err := k8s.NewAPI(kubeconfigPath, kubeContext, impersonate, impersonateGroup, 0)
 			if err != nil {
-				return err
+				return fmt.Errorf("failed to create a kubernetes client: %w", err)
 			}
-			if err = upgradeControlPlaneRunE(cmd.Context(), k, flags, options); err != nil {
+
+			if err = upgradeControlPlaneRunE(cmd.Context(), k, flags, options, manifests, output); err != nil {
 				fmt.Fprintln(os.Stderr, err.Error())
 				os.Exit(1)
 			}
@@ -118,29 +117,31 @@ A full list of configurable values can be found at https://www.github.com/linker
 	cmd.PersistentFlags().AddFlagSet(upgradeFlagSet)
 	flagspkg.AddValueOptionsFlags(cmd.Flags(), &options)
 	cmd.Flags().BoolVar(&crds, "crds", false, "Upgrade Linkerd CRDs")
+	cmd.PersistentFlags().StringVarP(&output, "output", "o", "yaml", "Output format. One of: json|yaml")
 
 	return cmd
 }
 
-func k8sClient(manifestsFile string) (*k8s.KubernetesAPI, error) {
-	// We need a Kubernetes client to fetch configs and issuer secrets.
-	var k *k8s.KubernetesAPI
-	var err error
-	if manifestsFile != "" {
-		readers, err := read(manifestsFile)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse manifests from %s: %w", manifestsFile, err)
-		}
+// makeConfigClient is used to re-initialize the Kubernetes client in order
+// to fetch existing configuration. It accepts two arguments: a Kubernetes
+// client, and a path to a manifest file. If the manifest path is empty, the
+// client will not be re-initialized. When non-empty, the client will be
+// replaced by a fake Kubernetes client that will hold the values parsed from
+// the manifest.
+func makeConfigClient(k *k8s.KubernetesAPI, localManifestPath string) (*k8s.KubernetesAPI, error) {
+	if localManifestPath == "" {
+		return k, nil
+	}
 
-		k, err = k8s.NewFakeAPIFromManifests(readers)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse Kubernetes objects from manifest %s: %w", manifestsFile, err)
-		}
-	} else {
-		k, err = k8s.NewAPI(kubeconfigPath, kubeContext, impersonate, impersonateGroup, 0)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create a kubernetes client: %w", err)
-		}
+	// We need a Kubernetes client to fetch configs and issuer secrets.
+	readers, err := read(localManifestPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse manifests from %s: %w", localManifestPath, err)
+	}
+
+	k, err = k8s.NewFakeAPIFromManifests(readers)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse Kubernetes objects from manifest %s: %w", localManifestPath, err)
 	}
 	return k, nil
 }
@@ -163,10 +164,10 @@ func makeUpgradeFlags() *pflag.FlagSet {
 	return upgradeFlags
 }
 
-func upgradeControlPlaneRunE(ctx context.Context, k *k8s.KubernetesAPI, flags []flag.Flag, options valuespkg.Options) error {
+func upgradeControlPlaneRunE(ctx context.Context, k *k8s.KubernetesAPI, flags []flag.Flag, options valuespkg.Options, localManifestPath string, format string) error {
 
 	crds := bytes.Buffer{}
-	err := renderCRDs(&crds)
+	err := renderCRDs(&crds, options, "yaml")
 	if err != nil {
 		return err
 	}
@@ -176,7 +177,13 @@ func upgradeControlPlaneRunE(ctx context.Context, k *k8s.KubernetesAPI, flags []
 		return fmt.Errorf("Linkerd CRDs must be installed first. Run linkerd upgrade with the --crds flag:\n%w", err)
 	}
 
-	buf, err := upgradeControlPlane(ctx, k, flags, options)
+	// Re-initialize client if a local manifest path is used
+	k, err = makeConfigClient(k, localManifestPath)
+	if err != nil {
+		return err
+	}
+
+	buf, err := upgradeControlPlane(ctx, k, flags, options, format)
 	if err != nil {
 		return err
 	}
@@ -191,28 +198,24 @@ func upgradeControlPlaneRunE(ctx context.Context, k *k8s.KubernetesAPI, flags []
 	return err
 }
 
-func upgradeCRDs() *bytes.Buffer {
+func upgradeCRDs(options valuespkg.Options, format string) *bytes.Buffer {
 	var buf bytes.Buffer
-	if err := renderCRDs(&buf); err != nil {
+	if err := renderCRDs(&buf, options, format); err != nil {
 		upgradeErrorf("Could not render upgrade configuration: %s", err)
 	}
 	return &buf
 }
 
-func upgradeControlPlane(ctx context.Context, k *k8s.KubernetesAPI, flags []flag.Flag, options valuespkg.Options) (*bytes.Buffer, error) {
+func upgradeControlPlane(ctx context.Context, k *k8s.KubernetesAPI, flags []flag.Flag, options valuespkg.Options, format string) (*bytes.Buffer, error) {
 	values, err := loadStoredValues(ctx, k)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load stored values: %w", err)
 	}
 
-	// If values is still nil, then the linkerd-config-overrides secret was not found.
-	// This means either means that Linkerd was installed with Helm or that the installation
-	// needs to be repaired.
 	if values == nil {
 		return nil, errors.New(
-			`Could not find the Linkerd config. If Linkerd was installed with Helm, please
-use Helm to perform upgrades. If Linkerd was not installed with Helm, please use
-the 'linkerd repair' command to repair the Linkerd config`)
+			`Could not find the linkerd-config-overrides secret.
+			If Linkerd was installed with Helm, please use Helm to perform upgrades`)
 	}
 
 	err = flag.ApplySetFlags(values, flags)
@@ -252,15 +255,15 @@ the 'linkerd repair' command to repair the Linkerd config`)
 	}
 
 	var buf bytes.Buffer
-	if err = renderControlPlane(&buf, values, valuesOverrides); err != nil {
+	if err = renderControlPlane(&buf, values, valuesOverrides, format); err != nil {
 		upgradeErrorf("Could not render upgrade configuration: %s", err)
 	}
 	return &buf, nil
 }
 
-func loadStoredValues(ctx context.Context, k *k8s.KubernetesAPI) (*charts.Values, error) {
+func loadStoredValues(ctx context.Context, k *k8s.KubernetesAPI) (*l5dcharts.Values, error) {
 	// Load the default values from the chart.
-	values, err := charts.NewValues()
+	values, err := l5dcharts.NewValues()
 	if err != nil {
 		return nil, err
 	}

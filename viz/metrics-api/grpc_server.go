@@ -14,6 +14,8 @@ import (
 	"github.com/linkerd/linkerd2/viz/metrics-api/util"
 	promv1 "github.com/prometheus/client_golang/api/prometheus/v1"
 	log "github.com/sirupsen/logrus"
+	"google.golang.org/grpc"
+	"gopkg.in/yaml.v2"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 )
@@ -45,15 +47,17 @@ const (
 	promClientCheckDescription = "linkerd viz can talk to Prometheus"
 )
 
-func newGrpcServer(
+// NewGrpcServer creates a new instance of the Api server and registers it
+// with Prometheus.
+func NewGrpcServer(
 	promAPI promv1.API,
 	k8sAPI *k8s.API,
 	controllerNamespace string,
 	clusterDomain string,
 	ignoredNamespaces []string,
-) *grpcServer {
+) *grpc.Server {
 
-	grpcServer := &grpcServer{
+	server := &grpcServer{
 		prometheusAPI:       promAPI,
 		k8sAPI:              k8sAPI,
 		controllerNamespace: controllerNamespace,
@@ -61,9 +65,10 @@ func newGrpcServer(
 		ignoredNamespaces:   ignoredNamespaces,
 	}
 
-	pb.RegisterApiServer(prometheus.NewGrpcServer(), grpcServer)
+	s := prometheus.NewGrpcServer(grpc.MaxConcurrentStreams(0))
+	pb.RegisterApiServer(s, server)
 
-	return grpcServer
+	return s
 }
 
 func (s *grpcServer) ListPods(ctx context.Context, req *pb.ListPodsRequest) (*pb.ListPodsResponse, error) {
@@ -231,4 +236,45 @@ func (s *grpcServer) ListServices(ctx context.Context, req *pb.ListServicesReque
 	}
 
 	return &pb.ListServicesResponse{Services: svcs}, nil
+}
+
+// validateTimeWindow returns an error if the Prometheus scrape interval
+// is longer than the query time window. This is an opportunistic, best-effort
+// validation: if we cannot determine the Prometheus scrape interval for any
+// reason, we do not return an error.
+func (s *grpcServer) validateTimeWindow(ctx context.Context, window string) error {
+	config, err := s.prometheusAPI.Config(ctx)
+	if err != nil {
+		return nil
+	}
+
+	type PrometheusConfig struct {
+		Global map[string]string
+	}
+
+	var prom PrometheusConfig
+	err = yaml.Unmarshal([]byte(config.YAML), &prom)
+	if err != nil {
+		return nil
+	}
+
+	scrape_interval_str, found := prom.Global["scrape_interval"]
+	if !found {
+		return nil
+	}
+
+	scrape_interval, err := time.ParseDuration(scrape_interval_str)
+	if err != nil {
+		return nil
+	}
+
+	t, err := time.ParseDuration(window)
+	if err != nil {
+		return err
+	}
+
+	if t < scrape_interval {
+		return fmt.Errorf("time window (%s) must be at least as long as the Prometheus scrape interval (%s)", window, scrape_interval)
+	}
+	return nil
 }

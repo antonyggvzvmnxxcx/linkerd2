@@ -3,29 +3,32 @@ package cmd
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
+	"io"
 	"os"
 	"sort"
 	"strings"
-	"sync"
 	"text/tabwriter"
+	"time"
 
 	destinationPb "github.com/linkerd/linkerd2-proxy-api/go/destination"
 	netPb "github.com/linkerd/linkerd2-proxy-api/go/net"
 	"github.com/linkerd/linkerd2/controller/api/destination"
+	"github.com/linkerd/linkerd2/pkg/addr"
 	pkgcmd "github.com/linkerd/linkerd2/pkg/cmd"
 	"github.com/linkerd/linkerd2/pkg/k8s"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/status"
 )
 
 type endpointsOptions struct {
-	outputFormat string
+	outputFormat   string
+	destinationPod string
+	contextToken   string
 }
 
 type (
@@ -35,6 +38,9 @@ type (
 		name    string
 		address string
 		ip      string
+		weight  uint32
+		labels  map[string]string
+		http2   *destinationPb.Http2ClientParams
 	}
 )
 
@@ -90,19 +96,30 @@ destination.`,
 				return err
 			}
 
-			k8sAPI, err := k8s.NewAPI(kubeconfigPath, kubeContext, impersonate, impersonateGroup, 0)
-			if err != nil {
-				return err
+			var client destinationPb.DestinationClient
+			var conn *grpc.ClientConn
+			if apiAddr != "" {
+				client, conn, err = destination.NewClient(apiAddr)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error creating destination client: %s\n", err)
+					os.Exit(1)
+				}
+			} else {
+				k8sAPI, err := k8s.NewAPI(kubeconfigPath, kubeContext, impersonate, impersonateGroup, 0)
+				if err != nil {
+					return err
+				}
+
+				client, conn, err = destination.NewExternalClient(cmd.Context(), controlPlaneNamespace, k8sAPI, options.destinationPod)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error creating destination client: %s\n", err)
+					os.Exit(1)
+				}
 			}
 
-			client, conn, err := destination.NewExternalClient(cmd.Context(), controlPlaneNamespace, k8sAPI)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error creating destination client: %s\n", err)
-				os.Exit(1)
-			}
 			defer conn.Close()
 
-			endpoints, err := requestEndpointsFromAPI(client, args)
+			endpoints, err := requestEndpointsFromAPI(client, options.contextToken, args)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Destination API error: %s\n", err)
 				os.Exit(1)
@@ -116,27 +133,26 @@ destination.`,
 	}
 
 	cmd.PersistentFlags().StringVarP(&options.outputFormat, "output", "o", options.outputFormat, fmt.Sprintf("Output format; one of: \"%s\" or \"%s\"", tableOutput, jsonOutput))
+	cmd.PersistentFlags().StringVar(&options.destinationPod, "destination-pod", "", "Target a specific destination Pod when there are multiple running")
+	cmd.PersistentFlags().StringVar(&options.contextToken, "token", "", "The context token to use when making the request to the destination API")
 
 	pkgcmd.ConfigureOutputFlagCompletion(cmd)
 
 	return cmd
 }
 
-func requestEndpointsFromAPI(client destinationPb.DestinationClient, authorities []string) (endpointsInfo, error) {
+func requestEndpointsFromAPI(client destinationPb.DestinationClient, token string, authorities []string) (endpointsInfo, error) {
 	info := make(endpointsInfo)
-	// buffered channels to avoid blocking
-	events := make(chan *destinationPb.Update, len(authorities))
-	errs := make(chan error, len(authorities))
-	var wg sync.WaitGroup
+	events := make(chan *destinationPb.Update, 1000)
+	errs := make(chan error, 1000)
 
 	for _, authority := range authorities {
-		wg.Add(1)
 		go func(authority string) {
-			defer wg.Done()
 			if len(errs) == 0 {
 				dest := &destinationPb.GetDestination{
-					Scheme: "http:",
-					Path:   authority,
+					Scheme:       "http:",
+					Path:         authority,
+					ContextToken: token,
 				}
 
 				rsp, err := client.Get(context.Background(), dest)
@@ -145,22 +161,31 @@ func requestEndpointsFromAPI(client destinationPb.DestinationClient, authorities
 					return
 				}
 
-				event, err := rsp.Recv()
-				if err != nil {
-					if grpcError, ok := status.FromError(err); ok {
-						err = errors.New(grpcError.Message())
+				// Endpoint state may be sent in multiple messages so it's not
+				// sufficient to read only the first message. Instead, we
+				// continuously read from the stream. This goroutine will never
+				// terminate if there are no errors, but this is okay for a
+				// short lived CLI command.
+				for {
+					event, err := rsp.Recv()
+					if errors.Is(err, io.EOF) {
+						return
+					} else if err != nil {
+						if grpcError, ok := status.FromError(err); ok {
+							err = errors.New(grpcError.Message())
+						}
+						errs <- err
+						return
 					}
-					errs <- err
-					return
+					events <- event
 				}
-				events <- event
 			}
 		}(authority)
 	}
-	// Block till all goroutines above are done
-	wg.Wait()
+	// Wait an amount of time for some endpoint responses to be received.
+	timeout := time.NewTimer(5 * time.Second)
 
-	for i := 0; i < len(authorities); i++ {
+	for {
 		select {
 		case err := <-errs:
 			// we only care about the first error
@@ -186,19 +211,23 @@ func requestEndpointsFromAPI(client destinationPb.DestinationClient, authorities
 					name:    labels["pod"],
 					address: tcpAddr.String(),
 					ip:      getIP(tcpAddr),
+					weight:  addr.GetWeight(),
+					labels:  addr.GetMetricLabels(),
+					http2:   addr.GetHttp2(),
 				})
 			}
+		case <-timeout.C:
+			return info, nil
 		}
 	}
-
-	return info, nil
 }
 
 func getIP(tcpAddr *netPb.TcpAddress) string {
-	ip := tcpAddr.GetIp().GetIpv4()
-	b := make([]byte, 4)
-	binary.BigEndian.PutUint32(b, ip)
-	return net.IP(b).String()
+	ip := addr.FromProxyAPI(tcpAddr.GetIp())
+	if ip == nil {
+		return ""
+	}
+	return addr.PublicIPToString(ip)
 }
 
 func renderEndpoints(endpoints endpointsInfo, options *endpointsOptions) string {
@@ -216,6 +245,11 @@ type rowEndpoint struct {
 	Port      uint32 `json:"port"`
 	Pod       string `json:"pod"`
 	Service   string `json:"service"`
+	Weight    uint32 `json:"weight"`
+
+	Http2 *destinationPb.Http2ClientParams `json:"http2,omitempty"`
+
+	Labels map[string]string `json:"labels"`
 }
 
 func writeEndpointsToBuffer(endpoints endpointsInfo, w *tabwriter.Writer, options *endpointsOptions) {
@@ -241,6 +275,9 @@ func writeEndpointsToBuffer(endpoints endpointsInfo, w *tabwriter.Writer, option
 					Port:      port,
 					Pod:       name,
 					Service:   serviceID,
+					Weight:    pod.weight,
+					Labels:    pod.labels,
+					Http2:     pod.http2,
 				}
 
 				endpointsTables[namespace] = append(endpointsTables[namespace], row)

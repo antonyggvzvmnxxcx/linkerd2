@@ -53,7 +53,7 @@ func TestGoodEndpoints(t *testing.T) {
 			testName := fmt.Sprintf("expect endpoints created for %s", endpointCase.name)
 
 			t.Run(testName, func(t *testing.T) {
-				err = TestHelper.RetryFor(5*time.Second, func() error {
+				err = testutil.RetryFor(5*time.Second, func() error {
 					out, err = TestHelper.LinkerdRun("diagnostics", "endpoints", endpointCase.authority, "-ojson")
 					if err != nil {
 						return fmt.Errorf("failed to get endpoints for %s: %w", endpointCase.authority, err)
@@ -108,10 +108,13 @@ func createTestCaseTable(controlNs, endpointNs string) []testCase {
 			expectedRE: `\[
   \{
     "namespace": "(\S*)",
-    "ip": "\d+\.\d+\.\d+\.\d+",
+    "ip": "[a-f0-9.:]+",
     "port": 8086,
-    "pod": "linkerd\-destination\-[a-f0-9]+\-[a-z0-9]+",
-    "service": "linkerd\-dst\.\S*"
+    "pod": "linkerd-destination\-[a-f0-9]+\-[a-z0-9]+",
+    "service": "linkerd-dst\.\S*",
+    "weight": \d+,
+    "http2": \{(?s).*\},
+    "labels": \{(?s).*\}
   \}
 \]`,
 			ns: controlNs,
@@ -122,10 +125,13 @@ func createTestCaseTable(controlNs, endpointNs string) []testCase {
 			expectedRE: `\[
   \{
     "namespace": "(\S*)",
-    "ip": "\d+\.\d+\.\d+\.\d+",
+    "ip": "[a-f0-9.:]+",
     "port": 8080,
-    "pod": "linkerd\-identity\-[a-f0-9]+\-[a-z0-9]+",
-    "service": "linkerd\-identity\.\S*"
+    "pod": "linkerd-identity\-[a-f0-9]+\-[a-z0-9]+",
+    "service": "linkerd-identity\.\S*",
+    "weight": \d+,
+    "http2": \{(?s).*\},
+    "labels": \{(?s).*\}
   \}
 \]`,
 			ns: controlNs,
@@ -136,10 +142,13 @@ func createTestCaseTable(controlNs, endpointNs string) []testCase {
 			expectedRE: `\[
   \{
     "namespace": "(\S*)",
-    "ip": "\d+\.\d+\.\d+\.\d+",
+    "ip": "[a-f0-9.:]+",
     "port": 8443,
-    "pod": "linkerd\-proxy\-injector-[a-f0-9]+\-[a-z0-9]+",
-    "service": "linkerd\-proxy\-injector\.\S*"
+    "pod": "linkerd-proxy-injector-[a-f0-9]+\-[a-z0-9]+",
+    "service": "linkerd-proxy-injector\.\S*",
+    "weight": \d+,
+    "http2": \{(?s).*\},
+    "labels": \{(?s).*\}
   \}
 \]`,
 			ns: controlNs,
@@ -150,10 +159,13 @@ func createTestCaseTable(controlNs, endpointNs string) []testCase {
 			expectedRE: `\[
   \{
     "namespace": "(\S*)",
-    "ip": "\d+\.\d+\.\d+\.\d+",
+    "ip": "[a-f0-9.:]+",
     "port": 8080,
-    "pod": "nginx\-[a-f0-9]+\-[a-z0-9]+",
-    "service": "nginx\.\S*"
+    "pod": "nginx-[a-f0-9]+\-[a-z0-9]+",
+    "service": "nginx\.\S*",
+    "weight": \d+,
+    "http2": \{(?s).*\},
+    "labels": \{(?s).*\}
   \}
 \]`,
 			ns: endpointNs,

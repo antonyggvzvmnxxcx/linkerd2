@@ -2,6 +2,7 @@ package watcher
 
 import (
 	"sync"
+	"time"
 
 	sp "github.com/linkerd/linkerd2/controller/gen/apis/serviceprofile/v1alpha2"
 	splisters "github.com/linkerd/linkerd2/controller/gen/client/listers/serviceprofile/v1alpha2"
@@ -44,22 +45,25 @@ var profileVecs = newMetricsVecs("profile", []string{"namespace", "profile"})
 
 // NewProfileWatcher creates a ProfileWatcher and begins watching the k8sAPI for
 // service profile changes.
-func NewProfileWatcher(k8sAPI *k8s.API, log *logging.Entry) *ProfileWatcher {
+func NewProfileWatcher(k8sAPI *k8s.API, log *logging.Entry) (*ProfileWatcher, error) {
 	watcher := &ProfileWatcher{
 		profileLister: k8sAPI.SP().Lister(),
 		profiles:      make(map[ProfileID]*profilePublisher),
 		log:           log.WithField("component", "profile-watcher"),
 	}
 
-	k8sAPI.SP().Informer().AddEventHandler(
+	_, err := k8sAPI.SP().Informer().AddEventHandler(
 		cache.ResourceEventHandlerFuncs{
 			AddFunc:    watcher.addProfile,
 			UpdateFunc: watcher.updateProfile,
 			DeleteFunc: watcher.deleteProfile,
 		},
 	)
+	if err != nil {
+		return nil, err
+	}
 
-	return watcher
+	return watcher, nil
 }
 
 //////////////////////
@@ -102,6 +106,16 @@ func (pw *ProfileWatcher) addProfile(obj interface{}) {
 }
 
 func (pw *ProfileWatcher) updateProfile(old interface{}, new interface{}) {
+	oldProfile := old.(*sp.ServiceProfile)
+	newProfile := new.(*sp.ServiceProfile)
+
+	oldUpdated := latestUpdated(oldProfile.ManagedFields)
+	updated := latestUpdated(newProfile.ManagedFields)
+	if !updated.IsZero() && updated != oldUpdated {
+		delta := time.Since(updated)
+		serviceProfileInformerLag.Observe(delta.Seconds())
+	}
+
 	pw.addProfile(new)
 }
 

@@ -1,7 +1,7 @@
 ARG BUILDPLATFORM=linux/amd64
 
 # Precompile key slow-to-build dependencies
-FROM --platform=$BUILDPLATFORM golang:1.17-alpine as go-deps
+FROM --platform=$BUILDPLATFORM golang:1.23-alpine AS go-deps
 WORKDIR /linkerd-build
 COPY go.mod go.sum ./
 COPY bin/install-deps bin/
@@ -10,7 +10,7 @@ ARG TARGETARCH
 RUN ./bin/install-deps $TARGETARCH
 
 ## compile tap
-FROM go-deps as golang
+FROM go-deps AS golang
 WORKDIR /linkerd-build
 COPY pkg pkg
 # TODO: remove after https://github.com/linkerd/linkerd2/issues/5661
@@ -26,6 +26,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -o /out/tap -tags prod 
 
 ## package runtime
 FROM scratch
+LABEL org.opencontainers.image.source=https://github.com/linkerd/linkerd2
 COPY LICENSE /linkerd/LICENSE
 COPY --from=golang /out/tap /tap
 

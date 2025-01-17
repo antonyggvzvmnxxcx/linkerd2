@@ -5,7 +5,6 @@ import (
 	"context"
 	"html/template"
 
-	"github.com/ghodss/yaml"
 	"github.com/linkerd/linkerd2/controller/k8s"
 	"github.com/linkerd/linkerd2/controller/webhook"
 	vizLabels "github.com/linkerd/linkerd2/viz/pkg/labels"
@@ -13,11 +12,12 @@ import (
 	admissionv1beta1 "k8s.io/api/admission/v1beta1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/tools/record"
+	"sigs.k8s.io/yaml"
 )
 
 // Params holds the values used in the patch template.
 type Params struct {
-	ProxyIndex      int
+	ProxyPath       string
 	ProxyTapSvcName string
 }
 
@@ -26,10 +26,10 @@ type Params struct {
 // pod or the namespace.
 func Mutate(tapSvcName string) webhook.Handler {
 	return func(
-		ctx context.Context,
-		k8sAPI *k8s.API,
+		_ context.Context,
+		k8sAPI *k8s.MetadataAPI,
 		request *admissionv1beta1.AdmissionRequest,
-		recorder record.EventRecorder,
+		_ record.EventRecorder,
 	) (*admissionv1beta1.AdmissionResponse, error) {
 		log.Debugf("request object bytes: %s", request.Object.Raw)
 		admissionResponse := &admissionv1beta1.AdmissionResponse{
@@ -41,13 +41,13 @@ func Mutate(tapSvcName string) webhook.Handler {
 			return nil, err
 		}
 		params := Params{
-			ProxyIndex:      webhook.GetProxyContainerIndex(pod.Spec.Containers),
+			ProxyPath:       webhook.GetProxyContainerPath(pod.Spec),
 			ProxyTapSvcName: tapSvcName,
 		}
-		if params.ProxyIndex < 0 || vizLabels.IsTapEnabled(pod) {
+		if params.ProxyPath == "" || vizLabels.IsTapEnabled(pod) {
 			return admissionResponse, nil
 		}
-		namespace, err := k8sAPI.NS().Lister().Get(request.Namespace)
+		namespace, err := k8sAPI.Get(k8s.NS, request.Namespace)
 		if err != nil {
 			return nil, err
 		}

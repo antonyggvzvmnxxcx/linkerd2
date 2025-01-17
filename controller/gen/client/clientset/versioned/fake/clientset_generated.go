@@ -20,12 +20,22 @@ package fake
 
 import (
 	clientset "github.com/linkerd/linkerd2/controller/gen/client/clientset/versioned"
+	externalworkloadv1beta1 "github.com/linkerd/linkerd2/controller/gen/client/clientset/versioned/typed/externalworkload/v1beta1"
+	fakeexternalworkloadv1beta1 "github.com/linkerd/linkerd2/controller/gen/client/clientset/versioned/typed/externalworkload/v1beta1/fake"
 	linkv1alpha1 "github.com/linkerd/linkerd2/controller/gen/client/clientset/versioned/typed/link/v1alpha1"
 	fakelinkv1alpha1 "github.com/linkerd/linkerd2/controller/gen/client/clientset/versioned/typed/link/v1alpha1/fake"
+	linkv1alpha2 "github.com/linkerd/linkerd2/controller/gen/client/clientset/versioned/typed/link/v1alpha2"
+	fakelinkv1alpha2 "github.com/linkerd/linkerd2/controller/gen/client/clientset/versioned/typed/link/v1alpha2/fake"
 	policyv1alpha1 "github.com/linkerd/linkerd2/controller/gen/client/clientset/versioned/typed/policy/v1alpha1"
 	fakepolicyv1alpha1 "github.com/linkerd/linkerd2/controller/gen/client/clientset/versioned/typed/policy/v1alpha1/fake"
+	policyv1beta3 "github.com/linkerd/linkerd2/controller/gen/client/clientset/versioned/typed/policy/v1beta3"
+	fakepolicyv1beta3 "github.com/linkerd/linkerd2/controller/gen/client/clientset/versioned/typed/policy/v1beta3/fake"
 	serverv1beta1 "github.com/linkerd/linkerd2/controller/gen/client/clientset/versioned/typed/server/v1beta1"
 	fakeserverv1beta1 "github.com/linkerd/linkerd2/controller/gen/client/clientset/versioned/typed/server/v1beta1/fake"
+	serverv1beta2 "github.com/linkerd/linkerd2/controller/gen/client/clientset/versioned/typed/server/v1beta2"
+	fakeserverv1beta2 "github.com/linkerd/linkerd2/controller/gen/client/clientset/versioned/typed/server/v1beta2/fake"
+	serverv1beta3 "github.com/linkerd/linkerd2/controller/gen/client/clientset/versioned/typed/server/v1beta3"
+	fakeserverv1beta3 "github.com/linkerd/linkerd2/controller/gen/client/clientset/versioned/typed/server/v1beta3/fake"
 	serverauthorizationv1beta1 "github.com/linkerd/linkerd2/controller/gen/client/clientset/versioned/typed/serverauthorization/v1beta1"
 	fakeserverauthorizationv1beta1 "github.com/linkerd/linkerd2/controller/gen/client/clientset/versioned/typed/serverauthorization/v1beta1/fake"
 	linkerdv1alpha2 "github.com/linkerd/linkerd2/controller/gen/client/clientset/versioned/typed/serviceprofile/v1alpha2"
@@ -39,8 +49,12 @@ import (
 
 // NewSimpleClientset returns a clientset that will respond with the provided objects.
 // It's backed by a very simple object tracker that processes creates, updates and deletions as-is,
-// without applying any validations and/or defaults. It shouldn't be considered a replacement
+// without applying any field management, validations and/or defaults. It shouldn't be considered a replacement
 // for a real clientset and is mostly useful in simple unit tests.
+//
+// DEPRECATED: NewClientset replaces this with support for field management, which significantly improves
+// server side apply testing. NewClientset is only available when apply configurations are generated (e.g.
+// via --with-applyconfig).
 func NewSimpleClientset(objects ...runtime.Object) *Clientset {
 	o := testing.NewObjectTracker(scheme, codecs.UniversalDecoder())
 	for _, obj := range objects {
@@ -87,9 +101,19 @@ var (
 	_ testing.FakeClient  = &Clientset{}
 )
 
+// ExternalworkloadV1beta1 retrieves the ExternalworkloadV1beta1Client
+func (c *Clientset) ExternalworkloadV1beta1() externalworkloadv1beta1.ExternalworkloadV1beta1Interface {
+	return &fakeexternalworkloadv1beta1.FakeExternalworkloadV1beta1{Fake: &c.Fake}
+}
+
 // LinkV1alpha1 retrieves the LinkV1alpha1Client
 func (c *Clientset) LinkV1alpha1() linkv1alpha1.LinkV1alpha1Interface {
 	return &fakelinkv1alpha1.FakeLinkV1alpha1{Fake: &c.Fake}
+}
+
+// LinkV1alpha2 retrieves the LinkV1alpha2Client
+func (c *Clientset) LinkV1alpha2() linkv1alpha2.LinkV1alpha2Interface {
+	return &fakelinkv1alpha2.FakeLinkV1alpha2{Fake: &c.Fake}
 }
 
 // PolicyV1alpha1 retrieves the PolicyV1alpha1Client
@@ -97,9 +121,24 @@ func (c *Clientset) PolicyV1alpha1() policyv1alpha1.PolicyV1alpha1Interface {
 	return &fakepolicyv1alpha1.FakePolicyV1alpha1{Fake: &c.Fake}
 }
 
+// PolicyV1beta3 retrieves the PolicyV1beta3Client
+func (c *Clientset) PolicyV1beta3() policyv1beta3.PolicyV1beta3Interface {
+	return &fakepolicyv1beta3.FakePolicyV1beta3{Fake: &c.Fake}
+}
+
 // ServerV1beta1 retrieves the ServerV1beta1Client
 func (c *Clientset) ServerV1beta1() serverv1beta1.ServerV1beta1Interface {
 	return &fakeserverv1beta1.FakeServerV1beta1{Fake: &c.Fake}
+}
+
+// ServerV1beta2 retrieves the ServerV1beta2Client
+func (c *Clientset) ServerV1beta2() serverv1beta2.ServerV1beta2Interface {
+	return &fakeserverv1beta2.FakeServerV1beta2{Fake: &c.Fake}
+}
+
+// ServerV1beta3 retrieves the ServerV1beta3Client
+func (c *Clientset) ServerV1beta3() serverv1beta3.ServerV1beta3Interface {
+	return &fakeserverv1beta3.FakeServerV1beta3{Fake: &c.Fake}
 }
 
 // ServerauthorizationV1beta1 retrieves the ServerauthorizationV1beta1Client

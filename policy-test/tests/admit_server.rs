@@ -1,6 +1,6 @@
 use linkerd_policy_controller_k8s_api::{
     self as api,
-    policy::server::{Port, ProxyProtocol, Server, ServerSpec},
+    policy::server::{Port, ProxyProtocol, Selector, Server, ServerSpec},
 };
 use linkerd_policy_test::{admission, with_temp_ns};
 
@@ -13,9 +13,10 @@ async fn accepts_valid() {
             ..Default::default()
         },
         spec: ServerSpec {
-            pod_selector: api::labels::Selector::default(),
-            port: Port::Number(80),
+            selector: Selector::Pod(api::labels::Selector::default()),
+            port: Port::Number(80.try_into().unwrap()),
             proxy_protocol: None,
+            access_policy: None,
         },
     })
     .await;
@@ -31,13 +32,14 @@ async fn accepts_server_updates() {
                 ..Default::default()
             },
             spec: ServerSpec {
-                pod_selector: api::labels::Selector::from_iter(Some(("app", "test"))),
-                port: Port::Number(80),
+                selector: Selector::Pod(api::labels::Selector::from_iter(Some(("app", "test")))),
+                port: Port::Number(80.try_into().unwrap()),
                 proxy_protocol: None,
+                access_policy: None,
             },
         };
 
-        let api = kube::Api::namespaced(client, &*ns);
+        let api = kube::Api::namespaced(client, &ns);
         api.create(&kube::api::PostParams::default(), &test0)
             .await
             .expect("resource must apply");
@@ -57,12 +59,13 @@ async fn accepts_server_updates() {
 async fn rejects_identitical_pod_selector() {
     with_temp_ns(|client, ns| async move {
         let spec = ServerSpec {
-            pod_selector: api::labels::Selector::from_iter(Some(("app", "test"))),
-            port: Port::Number(80),
+            selector: Selector::Pod(api::labels::Selector::from_iter(Some(("app", "test")))),
+            port: Port::Number(80.try_into().unwrap()),
             proxy_protocol: None,
+            access_policy: None,
         };
 
-        let api = kube::Api::namespaced(client, &*ns);
+        let api = kube::Api::namespaced(client, &ns);
 
         let test0 = Server {
             metadata: api::ObjectMeta {
@@ -94,7 +97,7 @@ async fn rejects_identitical_pod_selector() {
 #[tokio::test(flavor = "current_thread")]
 async fn rejects_all_pods_selected() {
     with_temp_ns(|client, ns| async move {
-        let api = kube::Api::namespaced(client, &*ns);
+        let api = kube::Api::namespaced(client, &ns);
 
         let test0 = Server {
             metadata: api::ObjectMeta {
@@ -103,9 +106,10 @@ async fn rejects_all_pods_selected() {
                 ..Default::default()
             },
             spec: ServerSpec {
-                pod_selector: api::labels::Selector::from_iter(Some(("app", "test"))),
-                port: Port::Number(80),
+                selector: Selector::Pod(api::labels::Selector::from_iter(Some(("app", "test")))),
+                port: Port::Number(80.try_into().unwrap()),
                 proxy_protocol: Some(ProxyProtocol::Http2),
+                access_policy: None,
             },
         };
         api.create(&kube::api::PostParams::default(), &test0)
@@ -119,15 +123,82 @@ async fn rejects_all_pods_selected() {
                 ..Default::default()
             },
             spec: ServerSpec {
-                pod_selector: api::labels::Selector::default(),
-                port: Port::Number(80),
+                selector: Selector::Pod(api::labels::Selector::default()),
+                port: Port::Number(80.try_into().unwrap()),
                 // proxy protocol doesn't factor into the selection
                 proxy_protocol: Some(ProxyProtocol::Http1),
+                access_policy: None,
             },
         };
         api.create(&kube::api::PostParams::default(), &test1)
             .await
             .expect_err("resource must not apply");
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn rejects_invalid_proxy_protocol() {
+    /// Define a Server resource with an invalid proxy protocol
+    #[derive(
+        Clone,
+        Debug,
+        kube::CustomResource,
+        serde::Deserialize,
+        serde::Serialize,
+        schemars::JsonSchema,
+    )]
+    #[kube(
+        group = "policy.linkerd.io",
+        version = "v1alpha1",
+        kind = "Server",
+        namespaced
+    )]
+    #[serde(rename_all = "camelCase")]
+    pub struct ServerSpec {
+        #[serde(flatten)]
+        pub selector: Selector,
+        pub port: Port,
+        pub proxy_protocol: String,
+    }
+
+    /// References a pod spec's port by name or number.
+    #[derive(Clone, Debug, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+    #[serde(rename_all = "camelCase")]
+    pub enum Port {
+        Number(u16),
+        Name(String),
+    }
+
+    admission::rejects(|ns| Server {
+        metadata: api::ObjectMeta {
+            namespace: Some(ns),
+            name: Some("test".to_string()),
+            ..Default::default()
+        },
+        spec: ServerSpec {
+            selector: Selector::Pod(api::labels::Selector::default()),
+            port: Port::Number(80.try_into().unwrap()),
+            proxy_protocol: "garbanzo".to_string(),
+        },
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn rejects_invalid_access_policy() {
+    admission::rejects(|ns| Server {
+        metadata: api::ObjectMeta {
+            namespace: Some(ns),
+            name: Some("test".to_string()),
+            ..Default::default()
+        },
+        spec: ServerSpec {
+            selector: Selector::Pod(api::labels::Selector::default()),
+            port: Port::Number(80.try_into().unwrap()),
+            proxy_protocol: None,
+            access_policy: Some("foobar".to_string()),
+        },
     })
     .await;
 }

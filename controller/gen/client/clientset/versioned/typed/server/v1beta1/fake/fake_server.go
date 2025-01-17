@@ -24,7 +24,6 @@ import (
 	v1beta1 "github.com/linkerd/linkerd2/controller/gen/apis/server/v1beta1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	labels "k8s.io/apimachinery/pkg/labels"
-	schema "k8s.io/apimachinery/pkg/runtime/schema"
 	types "k8s.io/apimachinery/pkg/types"
 	watch "k8s.io/apimachinery/pkg/watch"
 	testing "k8s.io/client-go/testing"
@@ -36,28 +35,30 @@ type FakeServers struct {
 	ns   string
 }
 
-var serversResource = schema.GroupVersionResource{Group: "policy.linkerd.io", Version: "v1beta1", Resource: "servers"}
+var serversResource = v1beta1.SchemeGroupVersion.WithResource("servers")
 
-var serversKind = schema.GroupVersionKind{Group: "policy.linkerd.io", Version: "v1beta1", Kind: "Server"}
+var serversKind = v1beta1.SchemeGroupVersion.WithKind("Server")
 
 // Get takes name of the server, and returns the corresponding server object, and an error if there is any.
 func (c *FakeServers) Get(ctx context.Context, name string, options v1.GetOptions) (result *v1beta1.Server, err error) {
+	emptyResult := &v1beta1.Server{}
 	obj, err := c.Fake.
-		Invokes(testing.NewGetAction(serversResource, c.ns, name), &v1beta1.Server{})
+		Invokes(testing.NewGetActionWithOptions(serversResource, c.ns, name, options), emptyResult)
 
 	if obj == nil {
-		return nil, err
+		return emptyResult, err
 	}
 	return obj.(*v1beta1.Server), err
 }
 
 // List takes label and field selectors, and returns the list of Servers that match those selectors.
 func (c *FakeServers) List(ctx context.Context, opts v1.ListOptions) (result *v1beta1.ServerList, err error) {
+	emptyResult := &v1beta1.ServerList{}
 	obj, err := c.Fake.
-		Invokes(testing.NewListAction(serversResource, serversKind, c.ns, opts), &v1beta1.ServerList{})
+		Invokes(testing.NewListActionWithOptions(serversResource, serversKind, c.ns, opts), emptyResult)
 
 	if obj == nil {
-		return nil, err
+		return emptyResult, err
 	}
 
 	label, _, _ := testing.ExtractFromListOptions(opts)
@@ -76,28 +77,30 @@ func (c *FakeServers) List(ctx context.Context, opts v1.ListOptions) (result *v1
 // Watch returns a watch.Interface that watches the requested servers.
 func (c *FakeServers) Watch(ctx context.Context, opts v1.ListOptions) (watch.Interface, error) {
 	return c.Fake.
-		InvokesWatch(testing.NewWatchAction(serversResource, c.ns, opts))
+		InvokesWatch(testing.NewWatchActionWithOptions(serversResource, c.ns, opts))
 
 }
 
 // Create takes the representation of a server and creates it.  Returns the server's representation of the server, and an error, if there is any.
 func (c *FakeServers) Create(ctx context.Context, server *v1beta1.Server, opts v1.CreateOptions) (result *v1beta1.Server, err error) {
+	emptyResult := &v1beta1.Server{}
 	obj, err := c.Fake.
-		Invokes(testing.NewCreateAction(serversResource, c.ns, server), &v1beta1.Server{})
+		Invokes(testing.NewCreateActionWithOptions(serversResource, c.ns, server, opts), emptyResult)
 
 	if obj == nil {
-		return nil, err
+		return emptyResult, err
 	}
 	return obj.(*v1beta1.Server), err
 }
 
 // Update takes the representation of a server and updates it. Returns the server's representation of the server, and an error, if there is any.
 func (c *FakeServers) Update(ctx context.Context, server *v1beta1.Server, opts v1.UpdateOptions) (result *v1beta1.Server, err error) {
+	emptyResult := &v1beta1.Server{}
 	obj, err := c.Fake.
-		Invokes(testing.NewUpdateAction(serversResource, c.ns, server), &v1beta1.Server{})
+		Invokes(testing.NewUpdateActionWithOptions(serversResource, c.ns, server, opts), emptyResult)
 
 	if obj == nil {
-		return nil, err
+		return emptyResult, err
 	}
 	return obj.(*v1beta1.Server), err
 }
@@ -112,7 +115,7 @@ func (c *FakeServers) Delete(ctx context.Context, name string, opts v1.DeleteOpt
 
 // DeleteCollection deletes a collection of objects.
 func (c *FakeServers) DeleteCollection(ctx context.Context, opts v1.DeleteOptions, listOpts v1.ListOptions) error {
-	action := testing.NewDeleteCollectionAction(serversResource, c.ns, listOpts)
+	action := testing.NewDeleteCollectionActionWithOptions(serversResource, c.ns, opts, listOpts)
 
 	_, err := c.Fake.Invokes(action, &v1beta1.ServerList{})
 	return err
@@ -120,11 +123,12 @@ func (c *FakeServers) DeleteCollection(ctx context.Context, opts v1.DeleteOption
 
 // Patch applies the patch and returns the patched server.
 func (c *FakeServers) Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts v1.PatchOptions, subresources ...string) (result *v1beta1.Server, err error) {
+	emptyResult := &v1beta1.Server{}
 	obj, err := c.Fake.
-		Invokes(testing.NewPatchSubresourceAction(serversResource, c.ns, name, pt, data, subresources...), &v1beta1.Server{})
+		Invokes(testing.NewPatchSubresourceActionWithOptions(serversResource, c.ns, name, pt, data, opts, subresources...), emptyResult)
 
 	if obj == nil {
-		return nil, err
+		return emptyResult, err
 	}
 	return obj.(*v1beta1.Server), err
 }

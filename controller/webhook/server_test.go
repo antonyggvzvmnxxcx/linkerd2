@@ -15,15 +15,16 @@ import (
 )
 
 var mockHTTPServer = &http.Server{
-	Addr: ":0",
+	Addr:              ":0",
+	ReadHeaderTimeout: 15 * time.Second,
 	TLSConfig: &tls.Config{
-		MinVersion: tls.VersionTLS12,
+		MinVersion: tls.VersionTLS13,
 	},
 }
 
 func TestServe(t *testing.T) {
 	t.Run("with empty http request body", func(t *testing.T) {
-		k8sAPI, err := k8s.NewFakeAPI()
+		k8sAPI, err := k8s.NewFakeMetadataAPI(nil)
 		if err != nil {
 			panic(err)
 		}

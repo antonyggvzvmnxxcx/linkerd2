@@ -5,19 +5,22 @@ The Linkerd maintainers are:
 * Oliver Gould <ver@buoyant.io> @olix0r
 * Alejandro Pedraza <alejandro@buoyant.io> @alpeb
 * Alex Leong <alex@buoyant.io> @adleong
-* Eliza Weisman <eliza@buoyant.io> @hawkw
-* Kevin Leimkuhler <kevinl@buoyant.io> @kleimkuhler
-* Tarun Pothulapati <tarun@buoyant.io> @pothulapati
 * Matei David <matei@buoyant.io> @mateiidavid
+* Zahari Dichev <zahari@buoyant.io> @zaharidichev
+
+## Directors
+
+The Linkerd directors are:
+
+* William Morgan <william@buoyant.io> @wmorgan
 
 ## Steering Committee
 
 The Linkerd Steering Committee members are:
 
-* Chris Campbell @campbel (HP)
-* Christian Hüning @christianhuening (finleap connect)
-* Justin Turner @justin-turner-heb (HEB)
-* William King @quentusrex (Subspace)
+* Steve Gray (ZeroFlucs) @steve-gray
+* Christian Hüning (BWI) @christianhuening
+* Dan Williams (LoveHolidays) @dwilliams782
 
 ## Emeriti
 
@@ -27,7 +30,10 @@ Former maintainers include:
 * Kevin Ingleman <ki@buoyant.io> @klingerf
 * Risha Mars <mars@buoyant.io> @rmars
 * Hema Lee <Hemalekha.Lee@nordstrom.com> @hemakl
-* Zahari Dichev <zahari@buoyant.io> @zaharidichev
+* Tarun Pothulapati <tarun@buoyant.io> @pothulapati
+* Kevin Leimkuhler @kleimkuhler
+* Steve Jenson @stevej
+* Eliza Weisman <eliza@buoyant.io> @hawkw
 
 <!--
 # Adding a new maintainer

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/ghodss/yaml"
+	"sigs.k8s.io/yaml"
 
 	"github.com/linkerd/linkerd2/controller/gen/client/clientset/versioned"
 	"github.com/linkerd/linkerd2/pkg/k8s"
@@ -24,7 +24,7 @@ func main() {
 	}
 	client := versioned.NewForConfigOrDie(config)
 
-	srvWatch, err := client.ServerV1beta1().Servers(*namespace).Watch(context.Background(), metav1.ListOptions{})
+	srvWatch, err := client.ServerV1beta3().Servers(*namespace).Watch(context.Background(), metav1.ListOptions{})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to watch Servers: %s", err)
 		os.Exit(1)

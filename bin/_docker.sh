@@ -15,13 +15,15 @@ bindir=$( cd "${BASH_SOURCE[0]%/*}" && pwd )
 # docker registry in, for instance, CI.
 export DOCKER_REGISTRY=${DOCKER_REGISTRY:-cr.l5d.io/linkerd}
 
-# buildx cache directory
-export DOCKER_BUILDKIT_CACHE=${DOCKER_BUILDKIT_CACHE:-}
+# populated in GitHub Actions
+export ACTIONS_CACHE_URL=${ACTIONS_CACHE_URL:-}
 
 export DOCKER_TARGET=${DOCKER_TARGET:-$(os)}
 
 # When set together with DOCKER_TARGET=multi-arch, it will push the multi-arch images to the registry
 export DOCKER_PUSH=${DOCKER_PUSH:-}
+
+export DOCKER_BUILDER=${DOCKER_BUILDER:-}
 
 # Default supported docker image architectures
 export SUPPORTED_ARCHS=${SUPPORTED_ARCHS:-linux/amd64,linux/arm64,linux/arm/v7}
@@ -30,7 +32,6 @@ export SUPPORTED_ARCHS=${SUPPORTED_ARCHS:-linux/amd64,linux/arm64,linux/arm/v7}
 # shellcheck disable=SC2206
 export DOCKER_IMAGES=(${DOCKER_IMAGES:-
     cli-bin
-    cni-plugin
     controller
     policy-controller
     metrics-api
@@ -53,7 +54,8 @@ docker_repo() {
 }
 
 docker_build() {
-    repo=$(docker_repo "$1")
+    name=$1
+    repo=$(docker_repo "$name")
     shift
 
     tag=$1
@@ -63,17 +65,17 @@ docker_build() {
     shift
 
     rootdir=${ROOTDIR:-$( cd "$bindir"/.. && pwd )}
-    cache_params=""
+    cache_params=''
 
-    if [ "$DOCKER_BUILDKIT_CACHE" ]; then
-      cache_params="--cache-from type=local,src=${DOCKER_BUILDKIT_CACHE} --cache-to type=local,dest=${DOCKER_BUILDKIT_CACHE},mode=max"
+    if [ "$ACTIONS_CACHE_URL" ]; then
+      cache_params="--cache-from type=gha,scope=$name-$DOCKER_TARGET --cache-to type=gha,scope=$name-$DOCKER_TARGET,mode=max"
     fi
 
-    output_params="--load"
+    output_params='--load'
     if [ "$DOCKER_TARGET" = 'multi-arch' ]; then
       output_params="--platform $SUPPORTED_ARCHS"
       if [ "$DOCKER_PUSH" ]; then
-        output_params+=" --push"
+        output_params+=' --push'
       else
         echo 'Error: env DOCKER_PUSH=1 is missing
 When building the multi-arch images it is required to push the images to the registry
@@ -82,12 +84,21 @@ See https://github.com/docker/buildx/issues/59 for more details'
       fi
     fi
 
+    # Allow for specifying docker builder engine
+    # This is a great way to use k8s to build docker images on native hardware instead of emulated
+    # See https://docs.docker.com/build/drivers/kubernetes/ for an example
+    if [ "$DOCKER_BUILDER" ]; then
+      output_params+=" --builder=$DOCKER_BUILDER"
+    fi
+
     log_debug "  :; docker buildx $rootdir $cache_params $output_params -t $repo:$tag -f $file $*"
+    mkdir -p target
     # shellcheck disable=SC2086
     docker buildx build "$rootdir" $cache_params \
         $output_params \
         -t "$repo:$tag" \
         -f "$file" \
+        --metadata-file target/metadata-"$name".json \
         "$@"
 
     echo "$repo:$tag"

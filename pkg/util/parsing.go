@@ -1,22 +1,20 @@
 package util
 
 import (
-	"strconv"
 	"strings"
 
-	"github.com/linkerd/linkerd2-proxy-init/ports"
 	log "github.com/sirupsen/logrus"
 	corev1 "k8s.io/api/core/v1"
 )
 
 // ParsePorts parses the given ports string into a map of ports;
 // this includes converting port ranges into separate ports
-func ParsePorts(portsString string) (map[uint32]struct{}, error) {
+func ParsePorts(portsString string) map[uint32]struct{} {
 	opaquePorts := make(map[uint32]struct{})
 	if portsString != "" {
 		portRanges := GetPortRanges(portsString)
 		for _, pr := range portRanges {
-			portsRange, err := ports.ParsePortRange(pr)
+			portsRange, err := ParsePortRange(pr)
 			if err != nil {
 				log.Warnf("Invalid port range [%v]: %s", pr, err)
 				continue
@@ -27,31 +25,42 @@ func ParsePorts(portsString string) (map[uint32]struct{}, error) {
 
 		}
 	}
-	return opaquePorts, nil
+	return opaquePorts
 }
 
-// ParseContainerOpaquePorts parses the opaque ports annotation into a list of ports;
-// this includes converting port ranges into separate ports and named ports
+// ParseContainerOpaquePorts parses the opaque ports annotation into a list of
+// port ranges, including validating port ranges and converting named ports
 // into their port number equivalents.
-func ParseContainerOpaquePorts(override string, containers []corev1.Container) []string {
+func ParseContainerOpaquePorts(override string, namedPorts map[string]int32) []PortRange {
 	portRanges := GetPortRanges(override)
-	var values []string
+	var values []PortRange
 	for _, pr := range portRanges {
-		port, named := isNamed(pr, containers)
+		port, named := namedPorts[pr]
 		if named {
-			values = append(values, strconv.Itoa(int(port)))
+			values = append(values, PortRange{UpperBound: int(port), LowerBound: int(port)})
 		} else {
-			pr, err := ports.ParsePortRange(pr)
+			pr, err := ParsePortRange(pr)
 			if err != nil {
 				log.Warnf("Invalid port range [%v]: %s", pr, err)
 				continue
 			}
-			for i := pr.LowerBound; i <= pr.UpperBound; i++ {
-				values = append(values, strconv.Itoa(i))
-			}
+			values = append(values, pr)
 		}
 	}
 	return values
+}
+
+func GetNamedPorts(containers []corev1.Container) map[string]int32 {
+	namedPorts := make(map[string]int32)
+	for _, container := range containers {
+		for _, p := range container.Ports {
+			if p.Name != "" {
+				namedPorts[p.Name] = p.ContainerPort
+			}
+		}
+	}
+
+	return namedPorts
 }
 
 // GetPortRanges gets port ranges from an override annotation
@@ -62,20 +71,6 @@ func GetPortRanges(override string) []string {
 	}
 
 	return ports
-}
-
-// isNamed checks if a port range is actually a container named port (e.g.
-// `123-456` is a valid name, but also is a valid range); all port names must
-// be checked before making it a list.
-func isNamed(pr string, containers []corev1.Container) (int32, bool) {
-	for _, c := range containers {
-		for _, p := range c.Ports {
-			if p.Name == pr {
-				return p.ContainerPort, true
-			}
-		}
-	}
-	return 0, false
 }
 
 // ContainsString checks if a string collections contains the given string.

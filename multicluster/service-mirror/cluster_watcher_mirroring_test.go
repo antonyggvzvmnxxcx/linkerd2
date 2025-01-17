@@ -6,12 +6,11 @@ import (
 	"testing"
 
 	"github.com/go-test/deep"
+	"github.com/linkerd/linkerd2/controller/gen/apis/link/v1alpha2"
 	"github.com/linkerd/linkerd2/controller/k8s"
 	consts "github.com/linkerd/linkerd2/pkg/k8s"
-	"github.com/linkerd/linkerd2/pkg/multicluster"
 	logging "github.com/sirupsen/logrus"
 	corev1 "k8s.io/api/core/v1"
-	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
@@ -29,7 +28,7 @@ type mirroringTestCase struct {
 func (tc *mirroringTestCase) run(t *testing.T) {
 	t.Run(tc.description, func(t *testing.T) {
 
-		q := workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
+		q := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[any]())
 		localAPI, err := tc.environment.runEnvironment(q)
 		if err != nil {
 			t.Fatal(err)
@@ -168,7 +167,7 @@ func TestRemoteServiceCreatedMirroring(t *testing.T) {
 				),
 			},
 			expectedLocalEndpoints: []*corev1.Endpoints{
-				headlessMirrorEndpoints("service-one-remote", "ns2", "pod-0", "", "gateway-identity", []corev1.EndpointPort{
+				headlessMirrorEndpoints("service-one-remote", "ns2", "gateway-identity", []corev1.EndpointPort{
 					{
 						Name:     "port1",
 						Port:     555,
@@ -200,6 +199,185 @@ func TestRemoteServiceCreatedMirroring(t *testing.T) {
 					}),
 			},
 		},
+		{
+			description: "remote discovery mirroring",
+			environment: createRemoteDiscoveryService,
+			expectedLocalServices: []*corev1.Service{
+				remoteDiscoveryMirrorService(
+					"service-one",
+					"ns1",
+					"111",
+					[]corev1.ServicePort{
+						{
+							Name:     "port1",
+							Protocol: "TCP",
+							Port:     555,
+						},
+						{
+							Name:     "port2",
+							Protocol: "TCP",
+							Port:     666,
+						},
+					}),
+			},
+			expectedLocalEndpoints: []*corev1.Endpoints{},
+		},
+		{
+			description: "link with no gateway mirrors only remote discovery",
+			environment: noGatewayLink,
+			expectedLocalServices: []*corev1.Service{
+				remoteDiscoveryMirrorService(
+					"service-one",
+					"ns1",
+					"111",
+					[]corev1.ServicePort{
+						{
+							Name:     "port1",
+							Protocol: "TCP",
+							Port:     555,
+						},
+						{
+							Name:     "port2",
+							Protocol: "TCP",
+							Port:     666,
+						},
+					}),
+			},
+			expectedLocalEndpoints: []*corev1.Endpoints{},
+		},
+		{
+			description: "federated service created",
+			environment: createFederatedService,
+			expectedLocalServices: []*corev1.Service{
+				federatedService(
+					"service-one",
+					"ns1",
+					[]corev1.ServicePort{
+						{
+							Name:     "port1",
+							Protocol: "TCP",
+							Port:     555,
+						},
+						{
+							Name:     "port2",
+							Protocol: "TCP",
+							Port:     666,
+						},
+					},
+					"", fmt.Sprintf("%s@%s", "service-one", clusterName)),
+			},
+			expectedLocalEndpoints: []*corev1.Endpoints{},
+		},
+		{
+			description: "federated service joined",
+			environment: joinFederatedService(),
+			expectedLocalServices: []*corev1.Service{
+				federatedService(
+					"service-one",
+					"ns1",
+					[]corev1.ServicePort{
+						{
+							Name:     "port1",
+							Protocol: "TCP",
+							Port:     555,
+						},
+						{
+							Name:     "port2",
+							Protocol: "TCP",
+							Port:     666,
+						},
+					}, "", fmt.Sprintf("%s@%s,%s@%s", "service-one", "other", "service-one", clusterName)),
+			},
+			expectedLocalEndpoints: []*corev1.Endpoints{},
+		},
+		{
+			description: "federated service left",
+			environment: leftFederatedService,
+			expectedLocalServices: []*corev1.Service{
+				federatedService(
+					"service-one",
+					"ns1",
+					[]corev1.ServicePort{
+						{
+							Name:     "port1",
+							Protocol: "TCP",
+							Port:     555,
+						},
+						{
+							Name:     "port2",
+							Protocol: "TCP",
+							Port:     666,
+						},
+					}, "", fmt.Sprintf("%s@%s", "service-one", "other")),
+			},
+			expectedLocalEndpoints: []*corev1.Endpoints{},
+		},
+		{
+			description: "local federated service created",
+			environment: createLocalFederatedService,
+			expectedLocalServices: []*corev1.Service{
+				federatedService(
+					"service-one",
+					"ns1",
+					[]corev1.ServicePort{
+						{
+							Name:     "port1",
+							Protocol: "TCP",
+							Port:     555,
+						},
+						{
+							Name:     "port2",
+							Protocol: "TCP",
+							Port:     666,
+						},
+					}, "service-one", ""),
+			},
+			expectedLocalEndpoints: []*corev1.Endpoints{},
+		},
+		{
+			description: "local federated service joined",
+			environment: joinLocalFederatedService(),
+			expectedLocalServices: []*corev1.Service{
+				federatedService(
+					"service-one",
+					"ns1",
+					[]corev1.ServicePort{
+						{
+							Name:     "port1",
+							Protocol: "TCP",
+							Port:     555,
+						},
+						{
+							Name:     "port2",
+							Protocol: "TCP",
+							Port:     666,
+						},
+					}, "service-one", "service-one@other"),
+			},
+			expectedLocalEndpoints: []*corev1.Endpoints{},
+		},
+		{
+			description: "local federated service left",
+			environment: leftLocalFederatedService,
+			expectedLocalServices: []*corev1.Service{
+				federatedService(
+					"service-one",
+					"ns1",
+					[]corev1.ServicePort{
+						{
+							Name:     "port1",
+							Protocol: "TCP",
+							Port:     555,
+						},
+						{
+							Name:     "port2",
+							Protocol: "TCP",
+							Port:     666,
+						},
+					}, "", "service-one@other"),
+			},
+			expectedLocalEndpoints: []*corev1.Endpoints{},
+		},
 	} {
 		tc := tt // pin
 		tc.run(t)
@@ -208,35 +386,39 @@ func TestRemoteServiceCreatedMirroring(t *testing.T) {
 
 func TestLocalNamespaceCreatedAfterServiceExport(t *testing.T) {
 	remoteAPI, err := k8s.NewFakeAPI(
-		gatewayAsYaml("existing-gateway", "existing-namespace", "222", "192.0.2.127", "mc-gateway", 888, "gateway-identity", defaultProbePort, defaultProbePath, defaultProbePeriod),
-		remoteServiceAsYaml("service-one", "ns1", "111", []corev1.ServicePort{}),
-		endpointsAsYaml("service-one", "ns1", "192.0.2.127", "gateway-identity", []corev1.EndpointPort{}),
+		asYaml(gateway("existing-gateway", "existing-namespace", "222", "192.0.2.127", "mc-gateway", 888, "gateway-identity", defaultProbePort, defaultProbePath, defaultProbePeriod)),
+		asYaml(remoteService("service-one", "ns1", "111", map[string]string{consts.DefaultExportedServiceSelector: "true"}, []corev1.ServicePort{})),
+		asYaml(endpoints("service-one", "ns1", "192.0.2.127", "gateway-identity", []corev1.EndpointPort{})),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	localAPI, err := k8s.NewFakeAPI()
+	localAPI, l5dAPI, err := k8s.NewFakeAPIWithL5dClient()
 	if err != nil {
 		t.Fatal(err)
 	}
 	remoteAPI.Sync(nil)
 	localAPI.Sync(nil)
 
-	q := workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
+	q := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[any]())
 	eventRecorder := record.NewFakeRecorder(100)
 
 	watcher := RemoteClusterServiceWatcher{
-		link: &multicluster.Link{
-			TargetClusterName:   clusterName,
-			TargetClusterDomain: clusterDomain,
-			GatewayIdentity:     "gateway-identity",
-			GatewayAddress:      "192.0.2.127",
-			GatewayPort:         888,
-			ProbeSpec:           defaultProbeSpec,
-			Selector:            *defaultSelector,
+		link: &v1alpha2.Link{
+			Spec: v1alpha2.LinkSpec{
+				TargetClusterName:       clusterName,
+				TargetClusterDomain:     clusterDomain,
+				GatewayIdentity:         "gateway-identity",
+				GatewayAddress:          "192.0.2.127",
+				GatewayPort:             "888",
+				ProbeSpec:               defaultProbeSpec,
+				Selector:                defaultSelector,
+				RemoteDiscoverySelector: defaultRemoteDiscoverySelector,
+			},
 		},
 		remoteAPIClient:         remoteAPI,
 		localAPIClient:          localAPI,
+		linkClient:              l5dAPI,
 		stopper:                 nil,
 		recorder:                eventRecorder,
 		log:                     logging.WithFields(logging.Fields{"cluster": clusterName}),
@@ -246,7 +428,7 @@ func TestLocalNamespaceCreatedAfterServiceExport(t *testing.T) {
 		headlessServicesEnabled: true,
 	}
 
-	q.Add(&RemoteServiceCreated{
+	q.Add(&RemoteServiceExported{
 		service: remoteService("service-one", "ns1", "111", map[string]string{
 			consts.DefaultExportedServiceSelector: "true",
 		}, []corev1.ServicePort{
@@ -274,7 +456,7 @@ func TestLocalNamespaceCreatedAfterServiceExport(t *testing.T) {
 	}
 
 	skippedEvent := <-eventRecorder.Events
-	if skippedEvent != fmt.Sprintf("%s %s %s", v1.EventTypeNormal, eventTypeSkipped, "Skipped mirroring service: namespace does not exist") {
+	if skippedEvent != fmt.Sprintf("%s %s %s", corev1.EventTypeNormal, eventTypeSkipped, "Skipped mirroring service: namespace does not exist") {
 		t.Error("Expected skipped event, got:", skippedEvent)
 	}
 
@@ -296,15 +478,15 @@ func TestLocalNamespaceCreatedAfterServiceExport(t *testing.T) {
 
 func TestServiceCreatedGatewayAlive(t *testing.T) {
 	remoteAPI, err := k8s.NewFakeAPI(
-		gatewayAsYaml("gateway", "gateway-ns", "1", "192.0.0.1", "gateway", 888, "gateway-identity", defaultProbePort, defaultProbePath, defaultProbePeriod),
-		remoteServiceAsYaml("svc", "ns", "1", []corev1.ServicePort{}),
-		endpointsAsYaml("svc", "ns", "192.0.0.1", "gateway-identity", []corev1.EndpointPort{}),
+		asYaml(gateway("gateway", "gateway-ns", "1", "192.0.0.1", "gateway", 888, "gateway-identity", defaultProbePort, defaultProbePath, defaultProbePeriod)),
+		asYaml(remoteService("svc", "ns", "1", map[string]string{consts.DefaultExportedServiceSelector: "true"}, []corev1.ServicePort{})),
+		asYaml(endpoints("svc", "ns", "192.0.0.1", "gateway-identity", []corev1.EndpointPort{})),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	localAPI, err := k8s.NewFakeAPI(
-		namespaceAsYaml("ns"),
+	localAPI, l5dAPI, err := k8s.NewFakeAPIWithL5dClient(
+		asYaml(namespace("ns")),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -312,26 +494,30 @@ func TestServiceCreatedGatewayAlive(t *testing.T) {
 	remoteAPI.Sync(nil)
 	localAPI.Sync(nil)
 
-	events := workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
+	events := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[any]())
 	watcher := RemoteClusterServiceWatcher{
-		link: &multicluster.Link{
-			TargetClusterName:   clusterName,
-			TargetClusterDomain: clusterDomain,
-			GatewayIdentity:     "gateway-identity",
-			GatewayAddress:      "192.0.0.1",
-			GatewayPort:         888,
-			ProbeSpec:           defaultProbeSpec,
-			Selector:            *defaultSelector,
+		link: &v1alpha2.Link{
+			Spec: v1alpha2.LinkSpec{
+				TargetClusterName:       clusterName,
+				TargetClusterDomain:     clusterDomain,
+				GatewayIdentity:         "gateway-identity",
+				GatewayAddress:          "192.0.0.1",
+				GatewayPort:             "888",
+				ProbeSpec:               defaultProbeSpec,
+				Selector:                defaultSelector,
+				RemoteDiscoverySelector: defaultRemoteDiscoverySelector,
+			},
 		},
 		remoteAPIClient: remoteAPI,
 		localAPIClient:  localAPI,
+		linkClient:      l5dAPI,
 		log:             logging.WithFields(logging.Fields{"cluster": clusterName}),
 		eventsQueue:     events,
 		requeueLimit:    0,
 		gatewayAlive:    true,
 	}
 
-	events.Add(&RemoteServiceCreated{
+	events.Add(&RemoteServiceExported{
 		service: remoteService("svc", "ns", "1", map[string]string{
 			consts.DefaultExportedServiceSelector: "true",
 		}, []corev1.ServicePort{
@@ -399,7 +585,7 @@ func TestServiceCreatedGatewayAlive(t *testing.T) {
 	// 'new-label'. This should exercise RemoteServiceUpdated which should
 	// update svc-remote; the gateway is still not alive though so we expect
 	// the Endpoints of svc-remote to still have no ready addresses.
-	events.Add(&RemoteServiceUpdated{
+	events.Add(&RemoteExportedServiceUpdated{
 		localService:   remoteService("svc-remote", "ns", "2", nil, nil),
 		localEndpoints: endpoints,
 		remoteUpdate: remoteService("svc", "ns", "2", map[string]string{
@@ -443,15 +629,15 @@ func TestServiceCreatedGatewayAlive(t *testing.T) {
 
 func TestServiceCreatedGatewayDown(t *testing.T) {
 	remoteAPI, err := k8s.NewFakeAPI(
-		gatewayAsYaml("gateway", "gateway-ns", "1", "192.0.0.1", "gateway", 888, "gateway-identity", defaultProbePort, defaultProbePath, defaultProbePeriod),
-		remoteServiceAsYaml("svc", "ns", "1", []corev1.ServicePort{}),
-		endpointsAsYaml("svc", "ns", "192.0.0.1", "gateway-identity", []corev1.EndpointPort{}),
+		asYaml(gateway("gateway", "gateway-ns", "1", "192.0.0.1", "gateway", 888, "gateway-identity", defaultProbePort, defaultProbePath, defaultProbePeriod)),
+		asYaml(remoteService("svc", "ns", "1", map[string]string{consts.DefaultExportedServiceSelector: "true"}, []corev1.ServicePort{})),
+		asYaml(endpoints("svc", "ns", "192.0.0.1", "gateway-identity", []corev1.EndpointPort{})),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	localAPI, err := k8s.NewFakeAPI(
-		namespaceAsYaml("ns"),
+	localAPI, l5dAPI, err := k8s.NewFakeAPIWithL5dClient(
+		asYaml(namespace("ns")),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -459,26 +645,30 @@ func TestServiceCreatedGatewayDown(t *testing.T) {
 	remoteAPI.Sync(nil)
 	localAPI.Sync(nil)
 
-	events := workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
+	events := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[any]())
 	watcher := RemoteClusterServiceWatcher{
-		link: &multicluster.Link{
-			TargetClusterName:   clusterName,
-			TargetClusterDomain: clusterDomain,
-			GatewayIdentity:     "gateway-identity",
-			GatewayAddress:      "192.0.0.1",
-			GatewayPort:         888,
-			ProbeSpec:           defaultProbeSpec,
-			Selector:            *defaultSelector,
+		link: &v1alpha2.Link{
+			Spec: v1alpha2.LinkSpec{
+				TargetClusterName:       clusterName,
+				TargetClusterDomain:     clusterDomain,
+				GatewayIdentity:         "gateway-identity",
+				GatewayAddress:          "192.0.0.1",
+				GatewayPort:             "888",
+				ProbeSpec:               defaultProbeSpec,
+				Selector:                defaultSelector,
+				RemoteDiscoverySelector: defaultRemoteDiscoverySelector,
+			},
 		},
 		remoteAPIClient: remoteAPI,
 		localAPIClient:  localAPI,
+		linkClient:      l5dAPI,
 		log:             logging.WithFields(logging.Fields{"cluster": clusterName}),
 		eventsQueue:     events,
 		requeueLimit:    0,
 		gatewayAlive:    false,
 	}
 
-	events.Add(&RemoteServiceCreated{
+	events.Add(&RemoteServiceExported{
 		service: remoteService("svc", "ns", "1", map[string]string{
 			consts.DefaultExportedServiceSelector: "true",
 		}, []corev1.ServicePort{
@@ -589,6 +779,64 @@ func TestRemoteServiceUpdatedMirroring(t *testing.T) {
 		},
 	} {
 		tc := tt // pin
+		tc.run(t)
+	}
+}
+
+// TestEmptyRemoteSelectors asserts that empty selectors do not introduce side
+// effects, such as mirroring unexported services. An empty label selector
+// functions as a catch-all (i.e. matches everything), the cluster watcher must
+// uphold an invariant whereby empty selectors do not export everything by
+// default.
+func TestEmptyRemoteSelectors(t *testing.T) {
+	for _, tt := range []mirroringTestCase{
+		{
+			description: "empty remote discovery selector does not result in exports",
+			environment: createEnvWithSelector(defaultSelector, &metav1.LabelSelector{}),
+			expectedEventsInQueue: []interface{}{&RemoteServiceExported{
+				service: remoteService("service-one", "ns1", "111", map[string]string{
+					consts.DefaultExportedServiceSelector: "true",
+				}, []corev1.ServicePort{
+					{
+						Name:     "default1",
+						Protocol: "TCP",
+						Port:     555,
+					},
+					{
+						Name:     "default2",
+						Protocol: "TCP",
+						Port:     666,
+					},
+				}),
+			},
+			},
+		},
+		{
+			description: "empty default selector does not result in exports",
+			environment: createEnvWithSelector(&metav1.LabelSelector{}, defaultRemoteDiscoverySelector),
+			expectedEventsInQueue: []interface{}{&RemoteServiceExported{
+				service: remoteService("service-two", "ns1", "111", map[string]string{
+					consts.DefaultExportedServiceSelector: "remote-discovery",
+				}, []corev1.ServicePort{
+					{
+						Name:     "remote1",
+						Protocol: "TCP",
+						Port:     777,
+					},
+					{
+						Name:     "remote2",
+						Protocol: "TCP",
+						Port:     888,
+					},
+				}),
+			}},
+		},
+		{
+			description: "no selector in link does not result in exports",
+			environment: createEnvWithSelector(&metav1.LabelSelector{}, &metav1.LabelSelector{}),
+		},
+	} {
+		tc := tt
 		tc.run(t)
 	}
 }
@@ -718,10 +966,14 @@ func TestGcOrphanedServicesMirroring(t *testing.T) {
 			environment: gcTriggered,
 			expectedLocalServices: []*corev1.Service{
 				mirrorService("test-service-1-remote", "test-namespace", "", nil),
+				headlessMirrorService("test-headless-service-remote", "test-namespace", "", nil),
+				endpointMirrorService("pod-0", "test-headless-service-remote", "test-namespace", "", nil),
 			},
 
 			expectedLocalEndpoints: []*corev1.Endpoints{
 				endpoints("test-service-1-remote", "test-namespace", "", "", nil),
+				headlessMirrorEndpoints("test-headless-service-remote", "test-namespace", "", nil),
+				endpointMirrorEndpoints("test-headless-service-remote", "test-namespace", "pod-0", "", "", nil),
 			},
 		},
 	} {
@@ -741,7 +993,7 @@ func onAddOrUpdateTestCases(isAdd bool) []mirroringTestCase {
 		{
 			description: fmt.Sprintf("enqueue a RemoteServiceCreated event when this is not a gateway and we have the needed annotations (%s)", testType),
 			environment: onAddOrUpdateExportedSvc(isAdd),
-			expectedEventsInQueue: []interface{}{&RemoteServiceCreated{
+			expectedEventsInQueue: []interface{}{&RemoteServiceExported{
 				service: remoteService("test-service", "test-namespace", "resVersion", map[string]string{
 					consts.DefaultExportedServiceSelector: "true",
 				}, nil),
@@ -750,7 +1002,7 @@ func onAddOrUpdateTestCases(isAdd bool) []mirroringTestCase {
 		{
 			description: fmt.Sprintf("enqueue a RemoteServiceUpdated event if this is a service that we have already mirrored and its res version is different (%s)", testType),
 			environment: onAddOrUpdateRemoteServiceUpdated(isAdd),
-			expectedEventsInQueue: []interface{}{&RemoteServiceUpdated{
+			expectedEventsInQueue: []interface{}{&RemoteExportedServiceUpdated{
 				localService:   mirrorService("test-service-remote", "test-namespace", "pastResourceVersion", nil),
 				localEndpoints: endpoints("test-service-remote", "test-namespace", "0.0.0.0", "", nil),
 				remoteUpdate: remoteService("test-service", "test-namespace", "currentResVersion", map[string]string{
@@ -777,7 +1029,7 @@ func onAddOrUpdateTestCases(isAdd bool) []mirroringTestCase {
 		{
 			description: fmt.Sprintf("enqueue RemoteServiceDeleted event as this service is not mirrorable anymore (%s)", testType),
 			environment: serviceNotExportedAnymore(isAdd),
-			expectedEventsInQueue: []interface{}{&RemoteServiceDeleted{
+			expectedEventsInQueue: []interface{}{&RemoteServiceUnexported{
 				Name:      "test-service",
 				Namespace: "test-namespace",
 			}},
@@ -812,7 +1064,7 @@ func TestOnDelete(t *testing.T) {
 			description: "enqueues a RemoteServiceDeleted because there is gateway metadata present on the service",
 			environment: onDeleteExportedService,
 			expectedEventsInQueue: []interface{}{
-				&RemoteServiceDeleted{
+				&RemoteServiceUnexported{
 					Name:      "test-service",
 					Namespace: "test-namespace",
 				},

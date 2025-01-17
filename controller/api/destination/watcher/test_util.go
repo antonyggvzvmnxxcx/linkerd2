@@ -1,11 +1,13 @@
 package watcher
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 
 	"github.com/go-test/deep"
 	sp "github.com/linkerd/linkerd2/controller/gen/apis/serviceprofile/v1alpha2"
+	"github.com/linkerd/linkerd2/controller/k8s"
 )
 
 // DeletingProfileListener implements ProfileUpdateListener and registers
@@ -42,6 +44,44 @@ func NewBufferingProfileListener() *BufferingProfileListener {
 	}
 }
 
+func CreateMockDecoder(configs ...string) configDecoder {
+	// Create a mock decoder with some random objs to satisfy client creation
+	return func(data []byte, cluster string, enableEndpointSlices bool) (*k8s.API, *k8s.MetadataAPI, error) {
+		remoteAPI, err := k8s.NewFakeAPI(configs...)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		metadataAPI, err := k8s.NewFakeMetadataAPI(nil)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		return remoteAPI, metadataAPI, nil
+	}
+
+}
+
+func CreateMulticlusterDecoder(configs map[string][]string) configDecoder {
+	return func(data []byte, cluster string, enableEndpointSlices bool) (*k8s.API, *k8s.MetadataAPI, error) {
+		configs, ok := configs[cluster]
+		if !ok {
+			return nil, nil, fmt.Errorf("cluster %s not found in configs", cluster)
+		}
+		remoteAPI, err := k8s.NewFakeAPI(configs...)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		metadataAPI, err := k8s.NewFakeMetadataAPI(nil)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		return remoteAPI, metadataAPI, nil
+	}
+}
+
 // Update stores the update in the internal buffer.
 func (bpl *BufferingProfileListener) Update(profile *sp.ServiceProfile) {
 	bpl.mu.Lock()
@@ -50,6 +90,7 @@ func (bpl *BufferingProfileListener) Update(profile *sp.ServiceProfile) {
 }
 
 func testCompare(t *testing.T, expected interface{}, actual interface{}) {
+	t.Helper()
 	if diff := deep.Equal(expected, actual); diff != nil {
 		t.Fatalf("%v", diff)
 	}

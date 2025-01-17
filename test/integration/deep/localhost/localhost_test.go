@@ -3,12 +3,14 @@ package localhost
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"os"
 	"regexp"
 	"testing"
 	"time"
 
 	"github.com/linkerd/linkerd2/testutil"
+	"github.com/linkerd/linkerd2/testutil/prommatch"
 )
 
 var TestHelper *testutil.TestHelper
@@ -19,6 +21,42 @@ func TestMain(m *testing.M) {
 	TestHelper.WaitUntilDeployReady(testutil.LinkerdDeployReplicasEdge)
 	os.Exit(m.Run())
 }
+
+var (
+	nginxPodRE  = regexp.MustCompile(`nginx.*`)
+	nginxLabels = prommatch.Labels{
+		"direction":             prommatch.Equals("outbound"),
+		"authority":             prommatch.Equals("nginx.linkerd-localhost-server-test.svc.cluster.local:8080"),
+		"dst_deployment":        prommatch.Equals("nginx"),
+		"dst_namespace":         prommatch.Equals("linkerd-localhost-server-test"),
+		"dst_pod":               prommatch.Like(nginxPodRE),
+		"dst_pod_template_hash": prommatch.Any(),
+		"dst_service":           prommatch.Equals("nginx"),
+		"dst_serviceaccount":    prommatch.Equals("default"),
+	}
+	requestsToNGINXMatcher = prommatch.NewMatcher("request_total",
+		nginxLabels,
+		prommatch.HasPositiveValue(),
+	)
+	failedResponsesFromNGINXMatcher = prommatch.NewMatcher("response_total",
+		nginxLabels,
+		prommatch.Labels{
+			"classification": prommatch.Equals("failure"),
+		},
+		prommatch.HasPositiveValue(),
+	)
+	successResponsesMatcher = prommatch.NewMatcher("response_total",
+		prommatch.Labels{
+			"direction":      prommatch.Equals("outbound"),
+			"classification": prommatch.Equals("success"),
+		},
+		prommatch.HasPositiveValue(),
+	)
+	tcpOpenMatcher = prommatch.NewMatcher("tcp_open_connections",
+		nginxLabels,
+		prommatch.HasValueOf(0),
+	)
+)
 
 // TestLocalhostServer creates an nginx deployment which listens on localhost
 // and a slow-cooker which attempts to send traffic to the nginx.  Since
@@ -35,7 +73,7 @@ func TestLocalhostServer(t *testing.T) {
 		testutil.AnnotatedFatal(t, "unexpected error", err)
 	}
 
-	TestHelper.WithDataPlaneNamespace(ctx, "localhost-test", map[string]string{}, t, func(t *testing.T, ns string) {
+	TestHelper.WithDataPlaneNamespace(ctx, "localhost-server-test", map[string]string{}, t, func(t *testing.T, ns string) {
 
 		out, err := TestHelper.KubectlApply(nginx, ns)
 		if err != nil {
@@ -58,7 +96,7 @@ func TestLocalhostServer(t *testing.T) {
 			}
 		}
 
-		err = TestHelper.RetryFor(50*time.Second, func() error {
+		err = testutil.RetryFor(50*time.Second, func() error {
 			// Use a short time window so that transient errors at startup
 			// fall out of the window.
 			metrics, err := TestHelper.LinkerdRun("diagnostics", "proxy-metrics", "-n", ns, "deploy/slow-cooker")
@@ -67,27 +105,14 @@ func TestLocalhostServer(t *testing.T) {
 					"unexpected diagnostics error: %s\n%s", err, out)
 			}
 
-			rpsRE := regexp.MustCompile(
-				`request_total\{direction="outbound",authority="nginx\.linkerd-localhost-test\.svc\.cluster\.local:8080",.*,dst_deployment="nginx",dst_namespace="linkerd-localhost-test",dst_pod="nginx.*",dst_pod_template_hash=".*",dst_service="nginx",dst_serviceaccount="default"\} [1-9]\d*`,
-			)
-			if !rpsRE.MatchString(metrics) {
-				return fmt.Errorf("expected non-zero RPS from slowcooker to nginx\nexpected: %s, got: %s", rpsRE, metrics)
-			}
+			m := prommatch.Suite{}.
+				MustContain("requests from slowcooker to nginx", requestsToNGINXMatcher).
+				MustContain("failed responses returned to slowcooker from nginx", failedResponsesFromNGINXMatcher).
+				MustNotContain("success responses returned to slowcooker from nginx", successResponsesMatcher).
+				MustContain("zero open tcp connections to nginx", tcpOpenMatcher)
 
-			// Requests sent to a port which is only bound to localhost should
-			// fail.
-			successRE := regexp.MustCompile(
-				`response_total\{direction="outbound",authority="nginx\.linkerd-localhost-test\.svc\.cluster\.local:8080",.*,classification="success"\} [1-9]\d*`,
-			)
-			if successRE.MatchString(metrics) {
-				return fmt.Errorf("expected zero success-rate from slowcooker to nginx\nexpected: %s, got: %s", successRE, metrics)
-			}
-
-			tcpConnRE := regexp.MustCompile(
-				`tcp_open_connections\{direction="outbound",peer="dst",authority="nginx\.linkerd-localhost-test\.svc\.cluster\.local:8080",.*\} 0`,
-			)
-			if !tcpConnRE.MatchString(metrics) {
-				return fmt.Errorf("expected no tcp connections from slowcooker to nginx\nexpected: %s, got: %s", tcpConnRE, metrics)
+			if err := m.CheckString(metrics); err != nil {
+				return fmt.Errorf("metrics check failed: %w", err)
 			}
 
 			return nil
@@ -95,5 +120,78 @@ func TestLocalhostServer(t *testing.T) {
 		if err != nil {
 			testutil.AnnotatedFatalf(t, "unexpected stat output", "unexpected stat output: %v", err)
 		}
+	})
+}
+
+// TestLocalhostRouting creates a pod with two containers: nginx and curl, and
+// tests traffic can be successfully routed when packets stay local. It will
+// test that the pod can send a request to itself successfully via its pod IP
+// (concrete address). And it will also test that a pod can send a request to
+// itself via its service IP (logical address).
+func TestLocalhostRouting(t *testing.T) {
+	ctx := context.Background()
+	nginx, err := TestHelper.LinkerdRun("inject", "testdata/nginx-and-curl.yaml")
+	if err != nil {
+		testutil.AnnotatedFatal(t, "unexpected error", err)
+	}
+
+	TestHelper.WithDataPlaneNamespace(ctx, "localhost-routing-test", map[string]string{}, t, func(t *testing.T, ns string) {
+		out, err := TestHelper.KubectlApply(nginx, ns)
+		if err != nil {
+			testutil.AnnotatedFatalf(t, "unexpected error", "unexpected error: %v output:\n%s", err, out)
+		}
+
+		err = TestHelper.CheckPods(ctx, ns, "nginx", 1)
+		if err != nil {
+			//nolint:errorlint
+			if rce, ok := err.(*testutil.RestartCountError); ok {
+				testutil.AnnotatedWarn(t, "CheckPods timed-out", rce)
+			} else {
+				testutil.AnnotatedError(t, "CheckPods timed-out", err)
+			}
+		}
+
+		pods, err := TestHelper.GetPodsForDeployment(ctx, ns, "nginx")
+		if err != nil {
+			testutil.AnnotatedFatalf(t, "unexpected error", "unexpected error: %v", err)
+		}
+
+		podName := pods[0].ObjectMeta.Name
+		execCommand := []string{"exec", "-n", ns, podName, "-c", "curl", "--", "curl", "-w", "%{http_code}", "-so", "/dev/null"}
+		t.Run("Route to Concrete Address Over Loopback", func(t *testing.T) {
+			podIP := pods[0].Status.PodIP
+			if podIP == "" {
+				testutil.AnnotatedFatalf(t, "unexpected error", "unexpected error: no IP address found for %s/%s", ns, podName)
+			}
+
+			addr, err := netip.ParseAddr(podIP)
+			if err != nil {
+				testutil.AnnotatedFatalf(t, "Invalid IP", "Invalid IP '%s': %s", podIP, err)
+			}
+			if addr.Is6() {
+				podIP = fmt.Sprintf("[%s]", podIP)
+			}
+			url := fmt.Sprintf("http://%s:80", podIP)
+
+			statusCode, err := TestHelper.Kubectl("", append(execCommand, url)...)
+			if err != nil {
+				testutil.AnnotatedFatalf(t, "unexpected error received when calling 'kubectl exec'", "unexpected error received when calling 'kubectl exec': %v", err)
+			}
+
+			if statusCode != "200" {
+				testutil.AnnotatedFatalf(t, "unexpected http status code received", "unexpected http status code received: expected: '200', got: '%s'", statusCode)
+			}
+		})
+
+		t.Run("Route to Logical Address Over Loopback", func(t *testing.T) {
+			statusCode, err := TestHelper.Kubectl("", append(execCommand, "http://nginx-svc:80")...)
+			if err != nil {
+				testutil.AnnotatedFatalf(t, "unexpected error received when calling 'kubectl exec'", "unexpected error received when calling 'kubectl exec': %v", err)
+			}
+
+			if statusCode != "200" {
+				testutil.AnnotatedFatalf(t, "unexpected http status code received", "unexpected http status code received: expected: '200', got: '%s'", statusCode)
+			}
+		})
 	})
 }

@@ -3,7 +3,7 @@ name: Coverage
 # Run weekly on Sunday at midnight (UTC).
 on:
   schedule:
-    - cron: '0 0 * * 0'
+    - cron: "0 0 * * 0"
 
 permissions:
   contents: read
@@ -12,14 +12,14 @@ jobs:
   go:
     name: Go
     timeout-minutes: 30
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-24.04
     container:
-      image: golang:1.17
+      image: golang:1.23
     steps:
-      - uses: actions/checkout@2541b1294d2704b0964813337f33b291d3f8596b
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - run: go install gotest.tools/gotestsum@v0.4.2
       - run: gotestsum -- -cover -coverprofile=coverage.out -v -mod=readonly ./...
-      - uses: codecov/codecov-action@81cd2dc8148241f03f5839d295e000b8f761e378
+      - uses: codecov/codecov-action@1e68e06f1dbfde0e4cefc87efeba9e4643565303
         with:
           files: ./coverage.out
           flags: unittests,golang
@@ -27,12 +27,13 @@ jobs:
   js:
     name: JS
     timeout-minutes: 30
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-24.04
     container:
-      image: node:14-stretch
+      image: node:20-stretch
     steps:
-      - uses: actions/checkout@2541b1294d2704b0964813337f33b291d3f8596b
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: Yarn setup
+        shell: bash
         run: bin/scurl -o- https://yarnpkg.com/install.sh | bash -s -- --version 1.21.1 --network-concurrency 1
       - name: Unit tests
         run: |
@@ -40,22 +41,23 @@ jobs:
           export NODE_ENV=test
           bin/web --frozen-lockfile
           bin/web test --reporters="jest-progress-bar-reporter" --reporters="./gh_ann_reporter.js" --coverage
-      - uses: codecov/codecov-action@81cd2dc8148241f03f5839d295e000b8f761e378
+      - uses: codecov/codecov-action@1e68e06f1dbfde0e4cefc87efeba9e4643565303
         with:
           directory: ./web/app/coverage
           flags: unittests,javascript
 
   rust:
     name: Rust
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     container:
-      image: docker://rust:1.60.0
+      image: docker://rust:1.83.0
       options: --security-opt seccomp=unconfined
     steps:
-      - uses: actions/checkout@2541b1294d2704b0964813337f33b291d3f8596b
-      - run: mkdir -p target && cd target && bin/scurl -v https://github.com/xd009642/tarpaulin/releases/download/0.18.0/cargo-tarpaulin-0.18.0-travis.tar.gz | tar zxvf - && chmod 755 cargo-tarpaulin
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - shell: bash
+        run: mkdir -p target && cd target && bin/scurl -v https://github.com/xd009642/tarpaulin/releases/download/0.27.3/cargo-tarpaulin-x86_64-unknown-linux-musl.tar.gz | tar zxvf - && chmod 755 cargo-tarpaulin
       - run: target/cargo-tarpaulin tarpaulin --workspace --out Xml
-      - uses: codecov/codecov-action@81cd2dc8148241f03f5839d295e000b8f761e378
+      - uses: codecov/codecov-action@1e68e06f1dbfde0e4cefc87efeba9e4643565303
         with:
           flags: unittests,rust

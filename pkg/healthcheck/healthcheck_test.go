@@ -473,6 +473,80 @@ status:
 
 }
 
+func TestNamespaceExtCfg(t *testing.T) {
+	namespaces := map[string]string{
+		"vizOne": `
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: viz-1
+  labels:
+    linkerd.io/extension: viz
+`,
+		"mcOne": `
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mc-1
+  labels:
+    linkerd.io/extension: multicluster
+`,
+		"mcTwo": `
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mc-2
+  labels:
+    linkerd.io/extension: multicluster
+`}
+
+	testCases := []struct {
+		description string
+		k8sConfigs  []string
+		results     []string
+	}{
+		{
+			description: "successfully passes checks",
+			k8sConfigs:  []string{namespaces["vizOne"], namespaces["mcOne"]},
+			results: []string{
+				"linkerd-extension-checks namespace configuration for extensions",
+			},
+		},
+		{
+			description: "fails invalid configuration",
+			k8sConfigs:  []string{namespaces["vizOne"], namespaces["mcOne"], namespaces["mcTwo"]},
+			results: []string{
+				"linkerd-extension-checks namespace configuration for extensions: some extensions have invalid configuration\n\t* label \"linkerd.io/extension=multicluster\" is present on more than one namespace:\n\t\t* mc-1\n\t\t* mc-2",
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		// pin tc
+		tc := tc
+		t.Run(tc.description, func(t *testing.T) {
+			hc := NewHealthChecker(
+				[]CategoryID{LinkerdExtensionChecks},
+				&Options{
+					ControlPlaneNamespace: "test-ns",
+				},
+			)
+
+			var err error
+			hc.kubeAPI, err = k8s.NewFakeAPI(tc.k8sConfigs...)
+			if err != nil {
+				t.Fatalf("Unexpected error: %s", err)
+			}
+
+			obs := newObserver()
+			hc.RunChecks(obs.resultFn)
+			if diff := deep.Equal(obs.results, tc.results); diff != nil {
+				t.Fatalf("%+v", diff)
+			}
+		})
+	}
+}
+
 func TestConfigExists(t *testing.T) {
 
 	namespace := []string{`
@@ -1249,6 +1323,23 @@ func TestCheckDataPlanePods(t *testing.T) {
 		}
 	})
 
+	t.Run("Does not return an error if the pod is in Terminated state", func(t *testing.T) {
+		pods := []corev1.Pod{
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: "emoji-d9c7866bb-7v74n"},
+				Status: corev1.PodStatus{
+					Phase:  "Failed",
+					Reason: "Terminated",
+				},
+			},
+		}
+
+		err := CheckPodsRunning(pods, "emojivoto")
+		if err != nil {
+			t.Fatalf("Expected no error, got %s", err)
+		}
+	})
+
 	t.Run("Returns an error if the proxy container is not ready", func(t *testing.T) {
 		pods := []corev1.Pod{
 			{
@@ -1624,105 +1715,6 @@ func TestServicesAnnotations(t *testing.T) {
 	})
 }
 
-func getWebhookAndKubeSystemNamespace(nsLabel string, failurePolicy string) []string {
-	return []string{fmt.Sprintf(`
-apiVersion: v1
-kind: Namespace
-metadata:
-  creationTimestamp: null
-  labels:
-    %s
-  name: kube-system`, nsLabel),
-		fmt.Sprintf(`
-apiVersion: admissionregistration.k8s.io/v1
-kind: MutatingWebhookConfiguration
-metadata:
-  name: linkerd-proxy-injector-webhook-config
-  labels:
-    linkerd.io/control-plane-component: proxy-injector
-    linkerd.io/control-plane-ns: linkerd
-webhooks:
-- name: linkerd-proxy-injector.linkerd.io
-  namespaceSelector:
-    matchExpressions:
-    - key: config.linkerd.io/admission-webhooks
-      operator: NotIn
-      values:
-      - disabled
-  clientConfig:
-    service:
-      name: linkerd-proxy-injector
-      namespace: linkerd
-      path: "/"
-    caBundle: cHJveHkgaW5qZWN0b3IgQ0EgYnVuZGxl
-  failurePolicy: %s
-  rules:
-  - operations: [ "CREATE" ]
-    apiGroups: [""]
-    apiVersions: ["v1"]
-    resources: ["pods"]
-  sideEffects: None`, failurePolicy),
-	}
-}
-
-func TestKubeSystemNamespaceInHA(t *testing.T) {
-	testCases := []struct {
-		testDescription string
-		k8sConfigs      []string
-		expectedOutput  string
-	}{
-		{
-			"passes when webhook policy is Ignore is not enabled",
-			getWebhookAndKubeSystemNamespace("", "Ignore"),
-			"",
-		},
-		{
-			"passes when webhook policy is Fail and namespace has required metadata",
-			getWebhookAndKubeSystemNamespace("config.linkerd.io/admission-webhooks: disabled", "Fail"),
-			"l5d-injection-disabled pod injection disabled on kube-system",
-		},
-		{
-			"fails when webhook policy is Fail and admission hooks are enabled",
-			getWebhookAndKubeSystemNamespace("config.linkerd.io/admission-webhooks: enabled", "Fail"),
-			"l5d-injection-disabled pod injection disabled on kube-system: kube-system namespace needs to have the label config.linkerd.io/admission-webhooks: disabled if injector webhook failure policy is Fail",
-		},
-		{
-			"fails when webhook policy is Fail and metadata is missing",
-			getWebhookAndKubeSystemNamespace("", "Fail"),
-			"l5d-injection-disabled pod injection disabled on kube-system: kube-system namespace needs to have the label config.linkerd.io/admission-webhooks: disabled if injector webhook failure policy is Fail",
-		},
-	}
-
-	for _, tc := range testCases {
-		tc := tc // pin
-		t.Run(tc.testDescription, func(t *testing.T) {
-
-			hc := NewHealthChecker([]CategoryID{}, &Options{})
-			hc.ControlPlaneNamespace = "linkerd"
-
-			hc.kubeAPI, _ = k8s.NewFakeAPI(tc.k8sConfigs...)
-			hc.addCheckAsCategory("l5d-injection-disabled", LinkerdHAChecks, "pod injection disabled on kube-system")
-
-			obs := newObserver()
-			hc.RunChecks(obs.resultFn)
-
-			if tc.expectedOutput == "" {
-				if len(obs.results) != 0 {
-					t.Fatalf("Expected not output, but got %v", obs.results)
-				}
-			} else {
-				expectedResults := []string{
-					tc.expectedOutput,
-				}
-				if diff := deep.Equal(obs.results, expectedResults); diff != nil {
-					t.Fatalf("%+v", diff)
-				}
-			}
-		})
-	}
-
-}
-
 func TestFetchCurrentConfiguration(t *testing.T) {
 	defaultValues, err := linkerd2.NewValues()
 
@@ -1746,13 +1738,14 @@ data:
   global: |
     {"linkerdNamespace":"linkerd","cniEnabled":false,"version":"install-control-plane-version","identityContext":{"trustDomain":"cluster.local","trustAnchorsPem":"fake-trust-anchors-pem","issuanceLifetime":"86400s","clockSkewAllowance":"20s"}}
   proxy: |
-    {"proxyImage":{"imageName":"cr.l5d.io/linkerd/proxy","pullPolicy":"IfNotPresent"},"proxyInitImage":{"imageName":"cr.l5d.io/linkerd/proxy-init","pullPolicy":"IfNotPresent"},"controlPort":{"port":4190},"ignoreInboundPorts":[],"ignoreOutboundPorts":[],"inboundPort":{"port":4143},"adminPort":{"port":4191},"outboundPort":{"port":4140},"resource":{"requestCpu":"","requestMemory":"","limitCpu":"","limitMemory":""},"proxyUid":"2102","logLevel":{"level":"warn,linkerd=info"},"disableExternalProfiles":true,"proxyVersion":"install-proxy-version","proxy_init_image_version":"v1.5.3","debugImage":{"imageName":"cr.l5d.io/linkerd/debug","pullPolicy":"IfNotPresent"},"debugImageVersion":"install-debug-version"}
+    {"proxyImage":{"imageName":"cr.l5d.io/linkerd/proxy","pullPolicy":"IfNotPresent"},"proxyInitImage":{"imageName":"cr.l5d.io/linkerd/proxy-init","pullPolicy":"IfNotPresent"},"controlPort":{"port":4190},"ignoreInboundPorts":[],"ignoreOutboundPorts":[],"inboundPort":{"port":4143},"adminPort":{"port":4191},"outboundPort":{"port":4140},"resource":{"requestCpu":"","requestMemory":"","limitCpu":"","limitMemory":""},"proxyUid":"2102","proxyGid":"2102","logLevel":{"level":"warn,linkerd=info"},"disableExternalProfiles":true,"proxyVersion":"install-proxy-version","proxy_init_image_version":"v2.3.0","debugImage":{"imageName":"cr.l5d.io/linkerd/debug","pullPolicy":"IfNotPresent"},"debugImageVersion":"install-debug-version"}
   install: |
     {"cliVersion":"dev-undefined","flags":[]}
   values: |
     controllerImage: ControllerImage
     controllerReplicas: 1
     controllerUID: 2103
+    controllerGID: 2103
     debugContainer: null
     destinationProxyResources: null
     destinationResources: null
@@ -1796,6 +1789,7 @@ data:
       resources: null
       saMountPath: null
       uid: 2102
+      gid: 2102
       waitBeforeExitSeconds: 0
       workloadKind: deployment
     proxyContainerName: ProxyContainerName
@@ -1808,13 +1802,7 @@ data:
         name: ProxyInitImageName
         pullPolicy: ImagePullPolicy
         version: ProxyInitVersion
-      resources:
-        cpu:
-          limit: 100m
-          request: 10m
-        memory:
-          limit: 50Mi
-          request: 10Mi
+      resources: null
       saMountPath: null
       xtMountPath:
         mountPath: /run
@@ -1836,6 +1824,7 @@ data:
 			&linkerd2.Values{
 				ControllerImage:      "ControllerImage",
 				ControllerUID:        2103,
+				ControllerGID:        2103,
 				EnableH2Upgrade:      true,
 				WebhookFailurePolicy: "WebhookFailurePolicy",
 				NodeSelector:         defaultValues.NodeSelector,
@@ -1862,22 +1851,13 @@ data:
 						Outbound: 4140,
 					},
 					UID: 2102,
+					GID: 2102,
 				},
 				ProxyInit: &linkerd2.ProxyInit{
 					Image: &linkerd2.Image{
 						Name:       "ProxyInitImageName",
 						PullPolicy: "ImagePullPolicy",
 						Version:    "ProxyInitVersion",
-					},
-					Resources: &linkerd2.Resources{
-						CPU: linkerd2.Constraints{
-							Limit:   "100m",
-							Request: "10m",
-						},
-						Memory: linkerd2.Constraints{
-							Limit:   "50Mi",
-							Request: "10Mi",
-						},
 					},
 					XTMountPath: &linkerd2.VolumeMountPath{
 						MountPath: "/run",
@@ -1899,13 +1879,14 @@ data:
   global: |
     {"linkerdNamespace":"linkerd","cniEnabled":false,"version":"install-control-plane-version","identityContext":{"trustDomain":"cluster.local","trustAnchorsPem":"fake-trust-anchors-pem","issuanceLifetime":"86400s","clockSkewAllowance":"20s"}}
   proxy: |
-    {"proxyImage":{"imageName":"cr.l5d.io/linkerd/proxy","pullPolicy":"IfNotPresent"},"proxyInitImage":{"imageName":"cr.l5d.io/linkerd/proxy-init","pullPolicy":"IfNotPresent"},"controlPort":{"port":4190},"ignoreInboundPorts":[],"ignoreOutboundPorts":[],"inboundPort":{"port":4143},"adminPort":{"port":4191},"outboundPort":{"port":4140},"resource":{"requestCpu":"","requestMemory":"","limitCpu":"","limitMemory":""},"proxyUid":"2102","logLevel":{"level":"warn,linkerd=info"},"disableExternalProfiles":true,"proxyVersion":"install-proxy-version","proxy_init_image_version":"v1.5.3","debugImage":{"imageName":"cr.l5d.io/linkerd/debug","pullPolicy":"IfNotPresent"},"debugImageVersion":"install-debug-version"}
+    {"proxyImage":{"imageName":"cr.l5d.io/linkerd/proxy","pullPolicy":"IfNotPresent"},"proxyInitImage":{"imageName":"cr.l5d.io/linkerd/proxy-init","pullPolicy":"IfNotPresent"},"controlPort":{"port":4190},"ignoreInboundPorts":[],"ignoreOutboundPorts":[],"inboundPort":{"port":4143},"adminPort":{"port":4191},"outboundPort":{"port":4140},"resource":{"requestCpu":"","requestMemory":"","limitCpu":"","limitMemory":""},"proxyUid":"2102","proxyGid":"2102","logLevel":{"level":"warn,linkerd=info"},"disableExternalProfiles":true,"proxyVersion":"install-proxy-version","proxy_init_image_version":"v2.3.0","debugImage":{"imageName":"cr.l5d.io/linkerd/debug","pullPolicy":"IfNotPresent"},"debugImageVersion":"install-debug-version"}
   install: |
     {"cliVersion":"dev-undefined","flags":[]}
   values: |
     controllerImage: ControllerImage
     controllerReplicas: 1
     controllerUID: 2103
+    controllerGID: 2103
     debugContainer: null
     destinationProxyResources: null
     destinationResources: null
@@ -1949,6 +1930,7 @@ data:
         resources: null
         saMountPath: null
         uid: 2102
+        gid: 2102
         waitBeforeExitSeconds: 0
         workloadKind: deployment
       proxyContainerName: ProxyContainerName
@@ -1962,12 +1944,6 @@ data:
           pullPolicy: ImagePullPolicy
           version: ProxyInitVersion
         resources:
-          cpu:
-            limit: 100m
-            request: 10m
-          memory:
-            limit: 50Mi
-            request: 10Mi
         saMountPath: null
         xtMountPath:
           mountPath: /run
@@ -1989,6 +1965,7 @@ data:
 			&linkerd2.Values{
 				ControllerImage:      "ControllerImage",
 				ControllerUID:        2103,
+				ControllerGID:        2103,
 				EnableH2Upgrade:      true,
 				WebhookFailurePolicy: "WebhookFailurePolicy",
 				NodeSelector:         defaultValues.NodeSelector,
@@ -2015,22 +1992,13 @@ data:
 						Outbound: 4140,
 					},
 					UID: 2102,
+					GID: 2102,
 				},
 				ProxyInit: &linkerd2.ProxyInit{
 					Image: &linkerd2.Image{
 						Name:       "ProxyInitImageName",
 						PullPolicy: "ImagePullPolicy",
 						Version:    "ProxyInitVersion",
-					},
-					Resources: &linkerd2.Resources{
-						CPU: linkerd2.Constraints{
-							Limit:   "100m",
-							Request: "10m",
-						},
-						Memory: linkerd2.Constraints{
-							Limit:   "50Mi",
-							Request: "10Mi",
-						},
 					},
 					XTMountPath: &linkerd2.VolumeMountPath{
 						MountPath: "/run",
@@ -2401,11 +2369,10 @@ spec:
     spec:
       nodeSelector:
         kubernetes.io/os: linux
-      hostNetwork: true
       serviceAccountName: linkerd-cni
       containers:
       - name: install-cni
-        image: cr.l5d.io/linkerd/cni-plugin:git-b4266c93
+        image: cr.l5d.io/linkerd/cni-plugin:v1.6.0
         env:
         - name: DEST_CNI_NET_DIR
           valueFrom:

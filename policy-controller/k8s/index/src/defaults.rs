@@ -1,5 +1,12 @@
+use ahash::AHashMap as HashMap;
 use anyhow::{anyhow, Error, Result};
+use linkerd_policy_controller_core::{
+    inbound::{AuthorizationRef, ClientAuthentication, ClientAuthorization},
+    IdentityMatch, IpNet,
+};
 use std::hash::Hash;
+
+use crate::ClusterInfo;
 
 /// Indicates the default behavior to apply when no Server is found for a port.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -14,6 +21,9 @@ pub enum DefaultPolicy {
 
     /// Indicates that all traffic is denied unless explicitly permitted by an authorization policy.
     Deny,
+
+    /// Indicates that all traffic is let through, but gets audited
+    Audit,
 }
 
 // === impl DefaultPolicy ===
@@ -40,32 +50,88 @@ impl std::str::FromStr for DefaultPolicy {
                 cluster_only: true,
             }),
             "deny" => Ok(Self::Deny),
+            "audit" => Ok(Self::Audit),
             s => Err(anyhow!("invalid mode: {:?}", s)),
+        }
+    }
+}
+
+impl DefaultPolicy {
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            Self::Allow {
+                authenticated_only: true,
+                cluster_only: false,
+            } => "all-authenticated",
+            Self::Allow {
+                authenticated_only: false,
+                cluster_only: false,
+            } => "all-unauthenticated",
+            Self::Allow {
+                authenticated_only: true,
+                cluster_only: true,
+            } => "cluster-authenticated",
+            Self::Allow {
+                authenticated_only: false,
+                cluster_only: true,
+            } => "cluster-unauthenticated",
+            Self::Deny => "deny",
+            Self::Audit => "audit",
+        }
+    }
+
+    pub(crate) fn default_authzs(
+        self,
+        config: &ClusterInfo,
+    ) -> HashMap<AuthorizationRef, ClientAuthorization> {
+        let mut authzs = HashMap::default();
+        let auth_ref = AuthorizationRef::Default(self.as_str());
+
+        if let DefaultPolicy::Allow {
+            authenticated_only,
+            cluster_only,
+        } = self
+        {
+            authzs.insert(
+                auth_ref,
+                Self::default_client_authz(config, authenticated_only, cluster_only),
+            );
+        } else if let DefaultPolicy::Audit = self {
+            authzs.insert(auth_ref, Self::default_client_authz(config, false, false));
+        }
+
+        authzs
+    }
+
+    fn default_client_authz(
+        config: &ClusterInfo,
+        authenticated_only: bool,
+        cluster_only: bool,
+    ) -> ClientAuthorization {
+        let authentication = if authenticated_only {
+            ClientAuthentication::TlsAuthenticated(vec![IdentityMatch::Suffix(vec![])])
+        } else {
+            ClientAuthentication::Unauthenticated
+        };
+        let networks = if cluster_only {
+            config.networks.iter().copied().map(Into::into).collect()
+        } else {
+            vec![
+                "0.0.0.0/0".parse::<IpNet>().unwrap().into(),
+                "::/0".parse::<IpNet>().unwrap().into(),
+            ]
+        };
+
+        ClientAuthorization {
+            authentication,
+            networks,
         }
     }
 }
 
 impl std::fmt::Display for DefaultPolicy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Allow {
-                authenticated_only: true,
-                cluster_only: false,
-            } => "all-authenticated".fmt(f),
-            Self::Allow {
-                authenticated_only: false,
-                cluster_only: false,
-            } => "all-unauthenticated".fmt(f),
-            Self::Allow {
-                authenticated_only: true,
-                cluster_only: true,
-            } => "cluster-authenticated".fmt(f),
-            Self::Allow {
-                authenticated_only: false,
-                cluster_only: true,
-            } => "cluster-unauthenticated".fmt(f),
-            Self::Deny => "deny".fmt(f),
-        }
+        self.as_str().fmt(f)
     }
 }
 
@@ -93,6 +159,7 @@ mod test {
                 authenticated_only: false,
                 cluster_only: true,
             },
+            DefaultPolicy::Audit,
         ] {
             assert_eq!(
                 default.to_string().parse::<DefaultPolicy>().unwrap(),

@@ -22,9 +22,9 @@ const (
 	defaultLinkerdNamespace = "linkerd"
 	defaultCNINamespace     = "linkerd-cni"
 	defaultClusterDomain    = "cluster.local"
-	defaultDockerRegistry   = "cr.l5d.io/linkerd"
 
-	jsonOutput  = healthcheck.JSONOutput
+	jsonOutput  = pkgcmd.JsonOutput
+	yamlOutput  = pkgcmd.YamlOutput
 	tableOutput = healthcheck.TableOutput
 	shortOutput = healthcheck.ShortOutput
 )
@@ -119,6 +119,7 @@ func init() {
 	RootCmd.AddCommand(newCmdUpgrade())
 	RootCmd.AddCommand(newCmdVersion())
 	RootCmd.AddCommand(newCmdUninstall())
+	RootCmd.AddCommand(newCmdPrune())
 
 	// Extension Sub Commands
 	RootCmd.AddCommand(jaeger.NewCmdJaeger())

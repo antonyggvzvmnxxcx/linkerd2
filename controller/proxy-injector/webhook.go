@@ -3,7 +3,7 @@ package injector
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
+	"os"
 	"strings"
 
 	"github.com/linkerd/linkerd2/controller/k8s"
@@ -15,8 +15,8 @@ import (
 	log "github.com/sirupsen/logrus"
 	admissionv1beta1 "k8s.io/api/admission/v1beta1"
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
 )
 
@@ -31,7 +31,7 @@ const (
 func Inject(linkerdNamespace string) webhook.Handler {
 	return func(
 		ctx context.Context,
-		api *k8s.API,
+		api *k8s.MetadataAPI,
 		request *admissionv1beta1.AdmissionRequest,
 		recorder record.EventRecorder,
 	) (*admissionv1beta1.AdmissionResponse, error) {
@@ -45,20 +45,19 @@ func Inject(linkerdNamespace string) webhook.Handler {
 			return nil, err
 		}
 
-		caPEM, err := ioutil.ReadFile(pkgK8s.MountPathTrustRootsPEM)
+		caPEM, err := os.ReadFile(pkgK8s.MountPathTrustRootsPEM)
 		if err != nil {
 			return nil, err
 		}
 		valuesConfig.IdentityTrustAnchorsPEM = string(caPEM)
 
-		namespace, err := api.NS().Lister().Get(request.Namespace)
+		ns, err := api.Get(k8s.NS, request.Namespace)
 		if err != nil {
 			return nil, err
 		}
-		nsAnnotations := namespace.GetAnnotations()
 		resourceConfig := inject.NewResourceConfig(valuesConfig, inject.OriginWebhook, linkerdNamespace).
 			WithOwnerRetriever(ownerRetriever(ctx, api, request.Namespace)).
-			WithNsAnnotations(nsAnnotations).
+			WithNsAnnotations(ns.GetAnnotations()).
 			WithKind(request.Kind.Kind)
 
 		// Build the injection report.
@@ -70,18 +69,23 @@ func Inject(linkerdNamespace string) webhook.Handler {
 
 		// If the resource has an owner, then it should be retrieved for recording
 		// events.
-		var parent *runtime.Object
+		var parent *metav1.PartialObjectMetadata
 		var ownerKind string
 		if ownerRef := resourceConfig.GetOwnerRef(); ownerRef != nil {
-			objs, err := api.GetObjects(request.Namespace, ownerRef.Kind, ownerRef.Name, labels.Everything())
+			res, err := k8s.GetAPIResource(ownerRef.Kind)
 			if err != nil {
-				log.Warnf("couldn't retrieve parent object %s-%s-%s; error: %s", request.Namespace, ownerRef.Kind, ownerRef.Name, err)
-			} else if len(objs) == 0 {
-				log.Warnf("couldn't retrieve parent object %s-%s-%s", request.Namespace, ownerRef.Kind, ownerRef.Name)
+				log.Tracef("skipping event for parent %s: %s", ownerRef.Kind, err)
 			} else {
-				parent = &objs[0]
+				objs, err := api.GetByNamespaceFiltered(res, request.Namespace, ownerRef.Name, labels.Everything())
+				if err != nil {
+					log.Warnf("couldn't retrieve parent object %s-%s-%s; error: %s", request.Namespace, ownerRef.Kind, ownerRef.Name, err)
+				} else if len(objs) == 0 {
+					log.Warnf("couldn't retrieve parent object %s-%s-%s", request.Namespace, ownerRef.Kind, ownerRef.Name)
+				} else {
+					parent = objs[0]
+				}
+				ownerKind = strings.ToLower(ownerRef.Kind)
 			}
-			ownerKind = strings.ToLower(ownerRef.Kind)
 		}
 
 		configLabels := configToPrometheusLabels(resourceConfig)
@@ -95,11 +99,11 @@ func Inject(linkerdNamespace string) webhook.Handler {
 
 			// If namespace has annotations that do not exist on pod then copy them
 			// over to pod's template.
-			resourceConfig.AppendNamespaceAnnotations()
+			inject.AppendNamespaceAnnotations(resourceConfig.GetOverrideAnnotations(), resourceConfig.GetNsAnnotations(), resourceConfig.GetWorkloadAnnotations())
 
 			// If the pod did not inherit the opaque ports annotation from the
 			// namespace, then add the default value from the config values. This
-			// ensures that the generated patch always sets the opaue ports
+			// ensures that the generated patch always sets the opaque ports
 			// annotation.
 			if !resourceConfig.HasWorkloadAnnotation(pkgK8s.ProxyOpaquePortsAnnotation) {
 				defaultPorts := strings.Split(resourceConfig.GetValues().Proxy.OpaquePorts, ",")
@@ -117,7 +121,7 @@ func Inject(linkerdNamespace string) webhook.Handler {
 				return nil, err
 			}
 			if parent != nil {
-				recorder.Event(*parent, v1.EventTypeNormal, eventTypeInjected, "Linkerd sidecar proxy injected")
+				recorder.Event(parent, v1.EventTypeNormal, eventTypeInjected, "Linkerd sidecar proxy injected")
 			}
 			log.Infof("injection patch generated for: %s", report.ResName())
 			log.Debugf("injection patch: %s", patchJSON)
@@ -131,15 +135,27 @@ func Inject(linkerdNamespace string) webhook.Handler {
 			}, nil
 		}
 
+		// Resource could not be injected with the sidecar, format the reason
+		// for injection being skipped to emit an event
+		readableReasons := make([]string, 0, len(reasons))
+		for _, reason := range reasons {
+			readableReasons = append(readableReasons, inject.Reasons[reason])
+		}
+		readableMsg := strings.Join(readableReasons, ", ")
+
+		if parent != nil {
+			recorder.Eventf(parent, v1.EventTypeNormal, eventTypeSkipped, "Linkerd sidecar proxy injection skipped: %s", readableMsg)
+		}
+
 		// Create a patch which adds the opaque ports annotation if the workload
-		// does already have it set.
+		// doesn't already have it set.
 		patchJSON, err := resourceConfig.CreateOpaquePortsPatch()
 		if err != nil {
 			return nil, err
 		}
 
-		// If patchJSON holds a patch after checking the workload annotations,
-		// then we admit the request.
+		// If resource needs to be patched with annotations (e.g opaque
+		// ports), then admit the request with the relevant patch
 		if len(patchJSON) != 0 {
 			log.Infof("annotation patch generated for: %s", report.ResName())
 			log.Debugf("annotation patch: %s", patchJSON)
@@ -153,26 +169,18 @@ func Inject(linkerdNamespace string) webhook.Handler {
 			}, nil
 		}
 
-		// The resource should be admitted without a patch. If it is a pod, create
-		// an event to record that injection was skipped.
+		// If the resource is a pod, and no annotation patch has
+		// been generated, record in the metrics (and log) that it has been
+		// entirely skipped and admit without any mutations
 		if resourceConfig.IsPod() {
-			var readableReasons, metricReasons string
-			metricReasons = strings.Join(reasons, ",")
-			for _, reason := range reasons {
-				readableReasons = readableReasons + ", " + inject.Reasons[reason]
-			}
-			// removing the initial comma, space
-			readableReasons = readableReasons[2:]
-			if parent != nil {
-				recorder.Eventf(*parent, v1.EventTypeNormal, eventTypeSkipped, "Linkerd sidecar proxy injection skipped: %s", readableReasons)
-			}
-			log.Infof("skipped %s: %s", report.ResName(), readableReasons)
-			proxyInjectionAdmissionResponses.With(admissionResponseLabels(ownerKind, request.Namespace, "true", metricReasons, report.InjectAnnotationAt, configLabels)).Inc()
+			log.Infof("skipped %s: %s", report.ResName(), readableMsg)
+			proxyInjectionAdmissionResponses.With(admissionResponseLabels(ownerKind, request.Namespace, "true", strings.Join(reasons, ","), report.InjectAnnotationAt, configLabels)).Inc()
 			return &admissionv1beta1.AdmissionResponse{
 				UID:     request.UID,
 				Allowed: true,
 			}, nil
 		}
+
 		return &admissionv1beta1.AdmissionResponse{
 			UID:     request.UID,
 			Allowed: true,
@@ -180,8 +188,8 @@ func Inject(linkerdNamespace string) webhook.Handler {
 	}
 }
 
-func ownerRetriever(ctx context.Context, api *k8s.API, ns string) inject.OwnerRetrieverFunc {
-	return func(p *v1.Pod) (string, string) {
+func ownerRetriever(ctx context.Context, api *k8s.MetadataAPI, ns string) inject.OwnerRetrieverFunc {
+	return func(p *v1.Pod) (string, string, error) {
 		p.SetNamespace(ns)
 		return api.GetOwnerKindAndName(ctx, p, true)
 	}
